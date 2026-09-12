@@ -1,0 +1,22 @@
+build/
+outputs/
+runs/
+wandb/
+.ruff_cache/
+dist/
+*.egg-info/
+**/__pycache__/
+
+**/.ipynb_checkpoints
+**/.ipynb_checkpoints/**
+
+**/notebooks
+
+# Ignore shell scripts
+*.sh
+
+# Ignore swap files
+*.swp
+
+# Ignore vscode directory
+.vscode/

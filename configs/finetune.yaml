@@ -1,0 +1,40 @@
+model:
+  name: dinov3_vits16
+  weights: null
+  pooling: cls
+  projection_dim: 128
+data:
+  train: base
+  val: null
+  image_size: 224
+  workers: 4
+epochs: 20
+batch_size: 16
+lr: 0.0001
+weight_decay: 0.05
+optimization:
+  scheduler: cosine
+  warmup_epochs: 2
+  warmup_start_lr: 0.000001
+  min_lr: 0.000001
+  weight_decay_end: 0.05
+  layer_decay: 0.75
+  exclude_bias_norm_decay: true
+  backbone_lr_multiplier: 1.0
+  head_lr_multiplier: 1.0
+  projector_lr_multiplier: 1.0
+  patch_embed_lr_multiplier: 1.0
+  freeze_last_layer_epochs: 0
+  label_smoothing: 0.1
+  ema_decay: null
+train_scope: all
+classification_weight: 1.0
+contrastive_weight: 0.2
+contrastive_mode: supervised
+temperature: 0.1
+memory_bank_size: 4096
+precision: fp32
+output: runs/dinov3
+resume: null
+deepspeed: null
+wandb: null

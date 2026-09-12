@@ -1,0 +1,6 @@
+numpy
+omegaconf
+Pillow
+torch
+torchvision
+deepspeed

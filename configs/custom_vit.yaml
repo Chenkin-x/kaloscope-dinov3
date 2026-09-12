@@ -1,0 +1,24 @@
+model:
+  name: custom_vit
+  weights: null
+  pooling: cls
+  projection_dim: 128
+  kwargs:
+    img_size: 224
+    patch_size: 16
+    embed_dim: 384
+    depth: 12
+    num_heads: 6
+    ffn_ratio: 4
+    n_storage_tokens: 4
+    pos_embed_rope_dtype: fp32
+data:
+  train: base
+  image_size: 224
+  workers: 4
+train_scope: backbone
+classification_weight: 0.0
+contrastive_weight: 1.0
+contrastive_mode: instance
+memory_bank_size: 4096
+output: runs/custom_vit
