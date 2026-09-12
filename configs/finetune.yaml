@@ -8,6 +8,16 @@ data:
   val: null
   image_size: 224
   workers: 4
+  # mean: [0.485, 0.456, 0.406]    # 归一化均值，默认 ImageNet (LVD-1689M)
+  # std: [0.229, 0.224, 0.225]     # 归一化标准差，默认 ImageNet (LVD-1689M)
+  # custom_transform: dinov3.finetune.data.sat_transform  # 完全自定义 transform，替换默认管线
+  # augment:                        # 数据增强配置，默认不开启
+  #   random_resized_crop: true
+  #   random_resized_crop_scale: [0.5, 1.0]
+  #   random_horizontal_flip: true
+  #   color_jitter: {brightness: 0.3, contrast: 0.3, saturation: 0.3, hue: 0.1, p: 0.8}
+  #   random_grayscale: true
+  #   random_grayscale_p: 0.2
 epochs: 20
 batch_size: 16
 lr: 0.0001

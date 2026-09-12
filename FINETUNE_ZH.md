@@ -16,6 +16,129 @@ base/
 
 类别按文件夹名称排序，映射保存在 checkpoint 和 `classes.json`。`data.val` 可设置为另一套同结构的验证集；训练和验证集必须有完全相同的类别文件夹。默认不划分验证集，也不会把训练准确率当成验证准确率。每个类别至少需要一张可读图片；训练总图数必须不小于 `batch_size × GPU 数量`。训练每轮丢弃不足一批的尾部，验证不重复、不丢弃图片
 
+## 图像 Transform
+
+训练和推理的预处理 transform 由 `data` 配置控制。默认使用纯评估管线（Resize + CenterCrop + ToTensor + Normalize），**不开启数据增强**。归一化参数默认为 ImageNet (LVD-1689M) 统计量：
+
+```yaml
+data:
+  image_size: 224
+  # mean 和 std 默认为 ImageNet 统计量，无需显式设置
+  # mean: [0.485, 0.456, 0.406]
+  # std: [0.229, 0.224, 0.225]
+```
+
+### 数据增强
+
+默认不开启任何数据增强。如果需要，通过 `data.augment` 配置逐项开启，每项都可独立控制：
+
+```yaml
+data:
+  image_size: 224
+  augment:
+    random_resized_crop: true          # 替换默认 Resize+CenterCrop
+    random_resized_crop_scale: [0.5, 1.0]  # 裁剪范围，默认 (0.5, 1.0)
+    random_horizontal_flip: true       # 随机水平翻转
+    color_jitter:                     # 颜色抖动
+      brightness: 0.3
+      contrast: 0.3
+      saturation: 0.3
+      hue: 0.1
+      p: 0.8                         # 应用概率
+    random_grayscale: true            # 随机灰度化
+    random_grayscale_p: 0.2           # 灰度化概率
+```
+
+开启 `augment` 中的任意一项后，默认的 Resize + CenterCrop 会被增强操作替换；未开启的项保持关闭。验证集和推理始终使用无增强的评估管线，不受 `augment` 影响
+
+### 仅修改归一化参数
+
+如果只需要更换均值/标准差，设置 `data.mean` 和 `data.std` 即可，其他预处理步骤不变。例如使用 SAT-493M 卫星图像预训练权重时：
+
+```yaml
+data:
+  image_size: 224
+  mean: [0.430, 0.411, 0.296]
+  std: [0.213, 0.156, 0.143]
+```
+
+### 完全自定义 Transform
+
+如果需要完全替换默认 transform 管线（包括 resize、ToTensor、Normalize 等全部步骤），使用 `data.custom_transform`，值是一个 Python 可调用对象的完整点分路径。该可调用对象接收 `resize_size` 关键字参数，返回一个 `torchvision.transforms.Compose`（或等价对象）。当设置了 `custom_transform` 时，`mean`/`std`/`augment` 参数均被忽略，因为整个管线已由自定义 transform 负责
+
+库内置两个官方 transform 预设：
+
+**LVD-1689M（标准 ImageNet 评估 transform）**：
+
+```yaml
+data:
+  image_size: 224
+  custom_transform: dinov3.finetune.data.lvd_transform
+```
+
+等价 Python 代码：
+
+```python
+from torchvision.transforms import v2
+
+def make_transform(resize_size: int = 256):
+    return v2.Compose([
+        v2.ToImage(),
+        v2.Resize((resize_size, resize_size), antialias=True),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ])
+```
+
+**SAT-493M（卫星图像 transform）**：
+
+```yaml
+data:
+  image_size: 224
+  custom_transform: dinov3.finetune.data.sat_transform
+```
+
+等价 Python 代码：
+
+```python
+from torchvision.transforms import v2
+
+def make_transform(resize_size: int = 256):
+    return v2.Compose([
+        v2.ToImage(),
+        v2.Resize((resize_size, resize_size), antialias=True),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=(0.430, 0.411, 0.296), std=(0.213, 0.156, 0.143)),
+    ])
+```
+
+### 编写自定义 Transform
+
+在自己的模块中定义一个可调用对象，签名必须为 `(resize_size: int)`，返回值需能接受 PIL Image 并输出 float 张量：
+
+```python
+# my_transforms.py
+from torchvision.transforms import v2
+
+def my_transform(resize_size: int = 256):
+    return v2.Compose([
+        v2.ToImage(),
+        v2.Resize((resize_size, resize_size), antialias=True),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+    ])
+```
+
+在配置中引用：
+
+```yaml
+data:
+  image_size: 224
+  custom_transform: my_transforms.my_transform
+```
+
+> 注意：`custom_transform` 设置后将**完全替换**默认 transform，确保你的自定义 transform 包含所有必要的步骤（ToImage / ToDtype / Normalize 等）
+
 ## 快速开始
 
 编辑 `configs/finetune.yaml`：

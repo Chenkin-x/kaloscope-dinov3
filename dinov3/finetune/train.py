@@ -179,9 +179,15 @@ def train(config):
     random.seed(config["seed"] + rank)
     torch.manual_seed(config["seed"] + rank)
     data_config = config["data"]
-    transform_args = {"size": data_config["image_size"], "mean": data_config.get("mean"), "std": data_config.get("std")}
+    transform_args = {
+        "size": data_config["image_size"],
+        "mean": data_config.get("mean"),
+        "std": data_config.get("std"),
+        "augment": data_config.get("augment"),
+        "custom_transform": data_config.get("custom_transform"),
+    }
     contrastive = config["contrastive_weight"] > 0
-    dataset = FolderViews(data_config["train"], image_transform(**transform_args, train=True), contrastive)
+    dataset = FolderViews(data_config["train"], image_transform(**transform_args), contrastive)
     sampler = DistributedSampler(
         dataset, num_replicas=world_size, rank=rank, shuffle=True, seed=config["seed"], drop_last=True
     )
@@ -197,7 +203,8 @@ def train(config):
         raise ValueError("Training set must contain at least batch_size * world_size images")
     validation = None
     if data_config.get("val"):
-        val_dataset = FolderViews(data_config["val"], image_transform(**transform_args))
+        val_args = {**transform_args, "augment": None}
+        val_dataset = FolderViews(data_config["val"], image_transform(**val_args))
         if val_dataset.classes != dataset.classes:
             raise ValueError("Validation folders must have the same class names as training folders")
         validation = DataLoader(

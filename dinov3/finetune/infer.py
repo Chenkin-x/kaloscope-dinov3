@@ -66,7 +66,12 @@ class Predictor:
         ):
             raise ValueError("Class names do not match classifier output dimension")
         self.model.to(self.device).eval()
-        self.transform = image_transform(data.get("image_size", 224), mean=data.get("mean"), std=data.get("std"))
+        self.transform = image_transform(
+            data.get("image_size", 224),
+            mean=data.get("mean"),
+            std=data.get("std"),
+            custom_transform=data.get("custom_transform"),
+        )
 
     @torch.inference_mode()
     def predict(self, images, topk=5, patches=False, normalize=False):
