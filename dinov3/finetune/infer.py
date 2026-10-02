@@ -2,11 +2,10 @@ import argparse
 import json
 from pathlib import Path
 
-from PIL import Image
 import torch
 import torch.nn.functional as functional
 
-from .data import image_transform
+from .data import image_transform, rgb_loader
 from .model import FineTuneModel, load_weights, read_config, state_dict_from
 
 
@@ -77,7 +76,7 @@ class Predictor:
     def predict(self, images, topk=5, patches=False, normalize=False):
         if topk <= 0:
             raise ValueError("topk must be positive")
-        batch = torch.stack([self.transform(image.convert("RGB")) for image in images]).to(self.device)
+        batch = torch.stack([self.transform(image) for image in images]).to(self.device)
         result = self.model(batch, patches=patches)
         output = {
             "features": (functional.normalize(result["features"], dim=1) if normalize else result["features"]).cpu()
@@ -141,10 +140,7 @@ def main():
     with (output / "predictions.jsonl").open("w", encoding="utf-8") as stream:
         for start in range(0, len(paths), args.batch_size):
             batch_paths = paths[start : start + args.batch_size]
-            images = []
-            for path in batch_paths:
-                with Image.open(path) as image:
-                    images.append(image.convert("RGB"))
+            images = [rgb_loader(path) for path in batch_paths]
             result = predictor.predict(images, args.topk, args.patch_tokens, args.normalize)
             shard = f"features_{start // args.batch_size:06d}.pt"
             torch.save(

@@ -1,8 +1,25 @@
 import importlib
 
 import torch
+from PIL import Image, ImageOps
 from torchvision import datasets, transforms
 from torch.utils.data import Dataset
+
+
+def prepare_rgb(image):
+    """Apply orientation and composite transparency before discarding alpha."""
+    image = ImageOps.exif_transpose(image)
+    if "A" in image.getbands() or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        background.alpha_composite(rgba)
+        return background.convert("RGB")
+    return image.convert("RGB")
+
+
+def rgb_loader(path):
+    with Image.open(path) as image:
+        return prepare_rgb(image)
 
 
 def _import_callable(dotted_path):
@@ -41,13 +58,13 @@ def _build_augment(size, config):
 def image_transform(size, mean=None, std=None, augment=None, custom_transform=None):
     if custom_transform is not None:
         factory = _import_callable(custom_transform)
-        return factory(resize_size=size)
+        return transforms.Compose([prepare_rgb, factory(resize_size=size)])
     mean = mean or [0.485, 0.456, 0.406]
     std = std or [0.229, 0.224, 0.225]
     spatial = _build_augment(size, augment)
-    if not spatial:
-        spatial = [transforms.Resize(round(size * 256 / 224)), transforms.CenterCrop(size)]
-    return transforms.Compose(spatial + [transforms.ToTensor(), transforms.Normalize(mean, std)])
+    if not augment or not augment.get("random_resized_crop", False):
+        spatial = [transforms.Resize(round(size * 256 / 224)), transforms.CenterCrop(size)] + spatial
+    return transforms.Compose([prepare_rgb] + spatial + [transforms.ToTensor(), transforms.Normalize(mean, std)])
 
 
 def lvd_transform(resize_size: int = 256):
@@ -74,7 +91,7 @@ def sat_transform(resize_size: int = 256):
 
 class FolderViews(Dataset):
     def __init__(self, root, transform, two_views=False):
-        self.folder = datasets.ImageFolder(root)
+        self.folder = datasets.ImageFolder(root, loader=rgb_loader)
         self.transform = transform
         self.two_views = two_views
         self.classes = self.folder.classes
