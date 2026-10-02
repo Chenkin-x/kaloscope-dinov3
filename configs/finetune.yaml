@@ -40,6 +40,7 @@ optimization:
 train_scope: all
 classification_weight: 1.0
 contrastive_weight: 0.2
+two_views: false  # true enables two-view CE even when contrastive_weight is zero
 contrastive_mode: supervised
 temperature: 0.1
 memory_bank_size: 4096

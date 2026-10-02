@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import random
+import time
 import uuid
 
 import torch
@@ -34,6 +35,7 @@ DEFAULTS = {
     "train_scope": "all",
     "classification_weight": 1.0,
     "contrastive_weight": 0.0,
+    "two_views": False,
     "contrastive_mode": "supervised",
     "temperature": 0.1,
     "memory_bank_size": 0,
@@ -62,6 +64,8 @@ def resolve_config(path):
 
 def validate_config(config):
     validate_optimization(config)
+    if not isinstance(config["two_views"], bool):
+        raise ValueError("two_views must be a boolean")
     if config["train_scope"] not in ("all", "backbone", "head"):
         raise ValueError("Invalid train_scope")
     if config["precision"] not in ("fp32", "fp16", "bf16"):
@@ -187,7 +191,8 @@ def train(config):
         "custom_transform": data_config.get("custom_transform"),
     }
     contrastive = config["contrastive_weight"] > 0
-    dataset = FolderViews(data_config["train"], image_transform(**transform_args), contrastive)
+    two_views = config["two_views"] or contrastive
+    dataset = FolderViews(data_config["train"], image_transform(**transform_args), two_views)
     sampler = DistributedSampler(
         dataset, num_replicas=world_size, rank=rank, shuffle=True, seed=config["seed"], drop_last=True
     )
@@ -326,11 +331,11 @@ def train(config):
             for first, second, labels, ids in loader:
                 base_lr, weight_decay = schedule.apply(optimizer)
                 ema_decay = schedule.ema_decay() if ema_enabled else None
-                images = torch.cat((first, second)) if contrastive else first
+                images = torch.cat((first, second)) if two_views else first
                 images = images.to(device, non_blocking=True)
                 labels, ids = labels.to(device), ids.to(device)
-                targets = labels.repeat(2) if contrastive else labels
-                sample_ids = ids.repeat(2) if contrastive else ids
+                targets = labels.repeat(2) if two_views else labels
+                sample_ids = ids.repeat(2) if two_views else ids
                 if engine:
                     images = images.to(dtype=next(model.parameters()).dtype)
                 with autocast_context(device, config["precision"]):
@@ -396,6 +401,23 @@ def train(config):
                     totals[3] += result["logits"].argmax(1).eq(targets).sum()
                 totals[4] += count
                 global_step += 1
+                if rank == 0 and (global_step == 1 or global_step % 50 == 0):
+                    progress = {
+                        "unix_time": time.time(),
+                        "epoch": epoch + 1,
+                        "global_step": global_step,
+                        "optimizer_steps": schedule.step,
+                        "loss": loss.detach().item(),
+                        "classification_loss": classification.detach().item(),
+                        "contrastive_loss": metric_loss.detach().item(),
+                        "lr": base_lr,
+                        "original_images_per_global_batch": len(first) * world_size,
+                        "views_per_original": 2 if two_views else 1,
+                        "views_per_global_batch": len(images) * world_size,
+                    }
+                    with (output / "steps.jsonl").open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(progress) + "\n")
+                    print(json.dumps({"stage": "train_step", **progress}), flush=True)
             totals = reduce_totals(totals)
             metrics = {
                 "epoch": epoch + 1,
