@@ -61,7 +61,7 @@ setup(
     author=AUTHOR,
     python_requires=REQUIRES_PYTHON,
     url=URL,
-    packages=find_packages(),
+    packages=find_packages(exclude=("tests", "tests.*")),
     package_data={
         "": ["*.yaml"],
     },
@@ -70,6 +70,7 @@ setup(
     extras_require={
         "dev": dev_requirements,
         "finetune": ["wandb"],
+        "temporal": ["scipy"],
         "deepspeed": ["deepspeed", "wandb"],
     },
     install_package_data=True,
