@@ -15,6 +15,14 @@ python -m dinov3.finetune.infer --checkpoint runs/dinov3/last.pt --input base --
 
 完整配置、恢复训练、DeepSpeed、W&B 和推理用法见 [中文使用说明](FINETUNE_ZH.md)。
 
+画师时间窗口 sigmoid 表征训练见 [训练说明](TEMPORAL_TRAINING_ZH.md) 和
+[配置示例](configs/temporal.yaml)。支持时间配对、画师年份组均衡采样、固定 dev 评估和平台期早停。
+
+通用 ImageFolder 入口可设置 `two_views: true`，在 `contrastive_weight: 0` 时进行双视图 CE；
+启用对比学习时自动使用双视图。`batch_size` 始终按原图计数，双视图实际前向图片数翻倍。
+步骤日志 `steps.jsonl` 同时记录原图数与视图数。图像加载统一处理 EXIF 方向和透明白底；
+相比旧版本，带透明通道或方向标记的图片可能产生不同特征。
+
 ## 预训练模型与下载
 
 貌似meta官方所有的dinov3下载链接都死掉了，只能找modelscope上别人上传的仓库了，比如：
