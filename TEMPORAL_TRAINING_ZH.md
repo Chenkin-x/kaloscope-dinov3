@@ -100,3 +100,8 @@ CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m unitt
 测试使用临时小图和随机初始化的小型 ViT，覆盖预处理、采样覆盖、时间边界、同家族排除、dev/test 隔离、
 单进程恢复、多进程 Gloo 训练与恢复，以及通用入口的单/双视图 CE 和对比学习。
 CPU 测试不能替代目标硬件上的 NCCL/bf16 性能验证，也不证明模型学习效果。
+
+## Kaloscope3 版本化配方
+
+正式 2K 基线与 4K＋跨内容配对＋5% 灰度候选的参数及兼容性说明见
+[configs/kaloscope3](configs/kaloscope3/README.md)。v1 提供原生 CLI 配置；v2 是完整策略记录，尚不能直接通过当前原生入口执行，不能仅提高 batch 后视作同一版本。
