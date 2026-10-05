@@ -1,0 +1,143 @@
+schema_version: 1
+recipe_id: v1-sigmoid-2k
+status: completed_baseline
+compatibility:
+  native_entrypoint: dinov3.finetune.temporal.train
+  native_cli_runnable: true
+  native_config_file: temporal.yaml
+  required_extensions: []
+  checkpoint_resume: Research checkpoints are not native format_version=1 training
+    checkpoints; model weights load separately.
+trainer_config:
+  paths: /path/to/paths.npy
+  metadata: /path/to/artist_year_data_v1
+  panel: /path/to/artist_full_eval_v1
+  output: runs/kaloscope3/v1-sigmoid-2k
+  model:
+    name: dinov3_vitb16
+    weights: /path/to/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+    pooling: cls_mean
+    projection_dim: 256
+  image_size: 512
+  batch_size: 256
+  workers: 16
+  eval_workers: 8
+  eval_batch_size: 128
+  precision: bf16
+  seed: 20261004
+  window_days: 365
+  train_from_block: 8
+  backbone_lr: 2.0e-05
+  projector_lr: 0.0002
+  temperature_bias_lr: 0.001
+  weight_decay: 0.05
+  gradient_clip: 1.0
+  warmup_steps: 1000
+  eval_every: 1000
+  save_every: 500
+  log_every: 20
+  max_coverage_passes: 50
+  min_effective_rank: 16.0
+  min_feature_std: 0.0001
+  early_stop:
+    min_delta: 0.001
+    reduce_patience: 3
+    stop_patience: 6
+    min_factor: 0.0625
+    min_coverage: 2.0
+    regression_tolerance: 0.05
+    failure_patience: 3
+runtime:
+  world_size: 8
+  global_batch: 2048
+  microbatch_per_gpu: 256
+  gradient_cache: false
+  feature_queue: false
+  global_negative_pool: all current-step embeddings
+  all_gather_autograd: true
+  persistent_workers: true
+  pin_memory: true
+  nofile_soft_limit: null
+  worker_policy_note: v2 disables persistent workers in the 2026-10-05 FD repair;
+    v1 value records the historical runner, not a recommendation.
+  optimizer: AdamW
+  temperature_bias_weight_decay: 0.0
+data_protocol:
+  training_images: 6569159
+  steps_per_coverage: 12831
+  dataset_report_sha256: bcb335007092f0bb4889196afb8f09ed4beec5460137a59052aab26caf9b60b6
+  eval_report_sha256: de3c305015c3ee22e3db60fc320823515ba8637c1eb9034d37fc11c7a854721c
+  geometry: EXIF orientation, transparency on white, RGB; short side 512 then center
+    crop 512; no stretching
+  split: Existing work-family split; sealed 5% test excluded from training, validation
+    and selection
+  test_used: false
+  normalization:
+    mean:
+    - 0.485
+    - 0.456
+    - 0.406
+    std:
+    - 0.229
+    - 0.224
+    - 0.225
+    input: uint8 RGB normalized internally after conversion to [0,1]
+loss:
+  name: signed_pair_sigmoid
+  formula: sum softplus(-signed_label*(exp(log_temperature)*raw_L2_cosine+bias))/global_batch
+  initial_temperature: 10.0
+  temperature_cap: 100.0
+  initial_bias: -7.6236419465115715
+  bias_rule: -log(global_batch - 2)
+  positive: same artist within365 upload days, distinct work families
+  negative: different single artists, distinct work families
+  ignored: same artist farther than365 days, self, same family
+  vicreg: false
+  gram_anchoring: false
+  classification_ce: false
+  ema: false
+sampling:
+  base: half anchors uniform full traversal, half artist then year-group balanced;
+    one temporal mate per anchor; no-mate anchors retained with different-artist fallback
+  baseline_batch_size: 2048
+  merge_consecutive_baseline_batches: 1
+  baseline_steps_per_coverage: 12831
+  keep_odd_epoch_boundary_continuity: true
+  cross_content:
+    enabled: false
+    attempt_fraction: 0.0
+    selection: Uniform among all eligible candidates; no candidate -> original mate
+    constraints:
+    - same artist
+    - absolute upload-day difference <= 365
+    - different work family
+    - both images have nonempty character AND copyright tags
+    - character tag sets disjoint AND copyright tag sets disjoint
+    source: Existing character/copyright tags only; no added labels or AI-generated
+      data
+augmentation:
+  horizontal_flip: false
+  color_jitter: false
+  random_crop: false
+  grayscale_probability: 0.0
+  gray_formula: round(0.2989 R + 0.587 G + 0.114 B), uint8, repeated over 3 channels
+  seed_scheme: null
+  identical_cache_replay: false
+evaluation:
+  panel: 'Fixed formal dev: gallery 16217 train images, query 1972 dev images; 512
+    artists'
+  selection_metric: projector cross-content macro temporal Hit@10
+  cross_content_queries: 1137
+  cross_content_artists: 365
+  compare_by: image exposures
+  baseline_step_multiplier: 1
+  loss_comparable_across_pool_sizes: false
+  lr_reduction_after_coverage: 1.0
+provenance:
+  run_id: sigmoid_year_v1_20261002
+  source_config_sha256: 9f94d1604b8b6537dce3266a9d4de6385690a463f4d3dfa2892c787b38423269
+  best_step_at_recording: 46000
+  finished_step: 52000
+  recorded_date: '2026-10-05'
+  source_config_paths: Machine-local paths replaced with /path/to placeholders; edit
+    before use
