@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from dinov3.finetune.temporal.loss import masks, sigmoid_loss
+from dinov3.loss import masks, sigmoid_loss
 
 
 class Tests(unittest.TestCase):

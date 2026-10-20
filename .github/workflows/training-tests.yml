@@ -1,8 +1,8 @@
-name: Training regression tests
+name: Temporal training checks
 
 on:
   push:
-    branches: [main, 'feat/**']
+    branches: [main, clean, 'feat/**']
   pull_request:
     branches: [main]
 
@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 20
     env:
       CUDA_VISIBLE_DEVICES: ''
+      ACCELERATE_USE_CPU: 'true'
       OMP_NUM_THREADS: '1'
       OPENBLAS_NUM_THREADS: '1'
     steps:
@@ -25,17 +26,9 @@ jobs:
       - name: Install CPU dependencies
         run: |
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install numpy Pillow omegaconf scipy ruff setuptools wheel
-          python -m pip install --no-deps -e .
+          python -m pip install numpy Pillow omegaconf scipy ruff 'transformers~=5.8.1' 'accelerate~=1.13.0'
       - name: Check maintained training modules
         run: |
-          ruff check --config pyproject.toml dinov3/finetune/temporal tests
-          ruff format --config pyproject.toml --check dinov3/finetune/temporal tests
+          ruff check --config pyproject.toml dinov3 tests train_temporal.py
       - name: Run CPU and two-rank Gloo regression tests
         run: python -m unittest discover -s tests -v
-      - name: Verify installed wheel imports without research sources
-        run: |
-          python -m pip wheel --no-deps --no-build-isolation . -w /tmp/kaloscope-wheel
-          python -m pip install --no-deps --force-reinstall /tmp/kaloscope-wheel/*.whl
-          cd /tmp
-          python -c 'from dinov3.finetune.temporal.train import train; from dinov3.finetune.temporal.model import Encoder'

@@ -26,12 +26,12 @@ accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 
 配对采样器已按 rank 分片，Accelerate 只包装模型和优化器，避免再次切分样本。
 
 ```text
-train_temporal.py
+train_temporal.py    训练主循环、评估和保存
 configs/
   temporal.yaml
   accelerate_zero2.yaml
   deepspeed_zero2.json
-dinov3/finetune/temporal/
+dinov3/
   model.py       Transformers 骨干、投影头、温度和 bias
   data.py        读图和元数据
   sampling.py    时间窗口配对采样
@@ -40,7 +40,6 @@ dinov3/finetune/temporal/
   control.py     验证驱动的学习率调整和早停
   config.py      训练配置
   runtime.py     Accelerate 初始化
-  train.py       训练、评估和保存
 ```
 
 续训使用相同配置和 GPU 数量：

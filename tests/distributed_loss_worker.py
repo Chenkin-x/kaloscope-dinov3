@@ -5,7 +5,7 @@ import torch.distributed as dist
 from torch.distributed.nn.functional import all_gather
 from torch.nn.parallel import DistributedDataParallel
 
-from dinov3.finetune.temporal.loss import masks, sigmoid_loss
+from dinov3.loss import masks, sigmoid_loss
 
 
 class TinyEncoder(torch.nn.Module):

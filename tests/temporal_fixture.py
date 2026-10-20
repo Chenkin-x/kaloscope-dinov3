@@ -6,7 +6,7 @@ from copy import deepcopy
 import numpy as np
 from PIL import Image
 
-from dinov3.finetune.temporal.config import DEFAULTS
+from dinov3.config import DEFAULTS
 
 
 def make_fixture(root):

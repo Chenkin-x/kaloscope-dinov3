@@ -10,11 +10,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from dinov3.finetune.temporal.data import Originals, load_metadata
-from dinov3.finetune.temporal.evaluate import content_mask, load_panel
-from dinov3.finetune.temporal.model import Encoder
-from dinov3.finetune.temporal.sampling import PairPool
-from dinov3.finetune.temporal.train import train
+from dinov3.data import Originals, load_metadata
+from dinov3.evaluate import content_mask, load_panel
+from dinov3.model import Encoder
+from dinov3.sampling import PairPool
+from train_temporal import train
 from tests.temporal_fixture import make_fixture
 
 
@@ -120,7 +120,7 @@ class TemporalTrainingTests(unittest.TestCase):
             "--standalone",
             "--nproc-per-node=2",
             "-m",
-            "dinov3.finetune.temporal.train",
+            "train_temporal",
             "--config",
             str(path),
         ]

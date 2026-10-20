@@ -82,7 +82,7 @@ gallery 和 query 分别至少包含 world size 个样本。每个被计入的�
 
 ```python
 import torch
-from dinov3.finetune.temporal.model import Encoder
+from dinov3.model import Encoder
 
 checkpoint = torch.load('runs/temporal/best.pt', map_location='cpu', weights_only=False)
 model = Encoder(checkpoint['model_config'], initialize=False).eval()

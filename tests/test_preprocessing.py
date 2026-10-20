@@ -2,7 +2,7 @@ import unittest
 
 from PIL import Image
 
-from dinov3.finetune.temporal.data import prepare_rgb
+from dinov3.data import prepare_rgb
 
 
 class TrainingDataTests(unittest.TestCase):

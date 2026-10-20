@@ -4,8 +4,8 @@ from pathlib import Path
 
 import numpy as np
 
-from dinov3.finetune.temporal.control import Convergence
-from dinov3.finetune.temporal.sampling import PairPool
+from dinov3.control import Convergence
+from dinov3.sampling import PairPool
 
 
 class Tests(unittest.TestCase):
