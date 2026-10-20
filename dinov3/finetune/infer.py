@@ -6,20 +6,19 @@ import torch
 import torch.nn.functional as functional
 
 from .data import image_transform, rgb_loader
-from .model import FineTuneModel, load_weights, read_config, state_dict_from
+from .model import CHECKPOINT_VERSION, FineTuneModel, load_weights, read_config
 
 
 class Predictor:
     def __init__(self, checkpoint=None, config=None, device=None, head_weights=None, classes=None, use_ema=False):
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.classes = classes
-        embedded_head = None
         if use_ema and not checkpoint:
             raise ValueError("EMA inference requires a training checkpoint")
         if checkpoint:
             payload = load_weights(checkpoint)
-            if "model_config" not in payload:
-                raise ValueError("For raw pretrained weights, use a config with model.weights instead of --checkpoint")
+            if payload.get("format_version") != CHECKPOINT_VERSION:
+                raise ValueError("Use a Transformers-backed checkpoint, or model.name_or_path with --config")
             self.model = FineTuneModel(payload["model_config"], payload["num_classes"], initialize=False)
             if use_ema and not payload.get("ema"):
                 raise ValueError("Checkpoint does not contain EMA weights")
@@ -32,32 +31,16 @@ class Predictor:
             data = config.get("data", {})
             model_config = config.get("model", config)
             self.model = FineTuneModel(model_config, 0)
-            weights = model_config.get("weights")
-            if weights and weights not in ("LVD1689M", "SAT493M"):
-                payload = load_weights(weights)
-                state = state_dict_from(payload)
-                if "head.weight" in state or "linear_head.weight" in state:
-                    embedded_head = state
-                    self.classes = classes or payload.get("classes")
-        if head_weights or embedded_head is not None:
-            state = state_dict_from(load_weights(head_weights)) if head_weights else embedded_head
-            for prefix in ("head.", "linear_head."):
-                if any(key.startswith(prefix) for key in state):
-                    state = {key.removeprefix(prefix): value for key, value in state.items() if key.startswith(prefix)}
-                    break
+        if head_weights:
+            state = load_weights(head_weights)
             count, dimension = state["weight"].shape
-            if embedded_head is not None and "pooling" not in model_config:
-                if dimension == 2 * self.model.backbone.embed_dim:
-                    self.model.pooling = "cls_mean"
-                    self.model.feature_dim = dimension
             if dimension != self.model.feature_dim:
                 raise ValueError(
                     "Head input dimension differs from pooling output; official ViT-7B head needs cls_mean"
                 )
             self.model.head = torch.nn.Linear(dimension, count, bias="bias" in state)
             self.model.head.load_state_dict(state, strict=True)
-            if head_weights:
-                self.classes = classes
+            self.classes = classes
         if (
             self.classes is not None
             and self.model.head is not None

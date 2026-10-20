@@ -7,4 +7,3 @@ ignore = ["E203", "E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"hubconf.py" = ["F401"]

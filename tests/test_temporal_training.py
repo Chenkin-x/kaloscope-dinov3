@@ -70,7 +70,10 @@ class TemporalTrainingTests(unittest.TestCase):
             "-m",
             "tests.distributed_loss_worker",
         ]
-        env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"}
+        env = {
+            **os.environ, "CUDA_VISIBLE_DEVICES": "", "ACCELERATE_USE_CPU": "true",
+            "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+        }
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=120, check=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -88,7 +91,7 @@ class TemporalTrainingTests(unittest.TestCase):
             torch.testing.assert_close(first["model"][key], resumed["model"][key], rtol=0, atol=0)
         self.assertEqual(first["controller"], resumed["controller"])
         # Loading trained weights does not require the initial pretrained file.
-        model_config = {**resumed["model_config"], "weights": "/nonexistent/pretrained.pth"}
+        model_config = {**resumed["model_config"], "name_or_path": "/nonexistent/pretrained"}
         model = Encoder(model_config, initialize=False).eval()
         model.load_state_dict(resumed["model"])
         with torch.no_grad():
@@ -121,13 +124,17 @@ class TemporalTrainingTests(unittest.TestCase):
             "--config",
             str(path),
         ]
-        env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"}
+        env = {
+            **os.environ, "CUDA_VISIBLE_DEVICES": "", "ACCELERATE_USE_CPU": "true",
+            "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+        }
         for args in (["--max-steps", "1"], ["--resume", "--max-steps", "2"]):
             process = subprocess.run(command + args, env=env, capture_output=True, text=True, timeout=120, check=False)
             self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
         checkpoint = torch.load(Path(config["output"]) / "last.pt", weights_only=False)
         self.assertEqual(checkpoint["step"], 2)
-        self.assertEqual(len(checkpoint["rng"]), 2)
+        state = Path(config["output"]) / checkpoint["accelerate_state"]
+        self.assertEqual(len(list(state.glob("random_states_*.pkl"))), 2)
         self.assertTrue(all(torch.isfinite(value).all() for value in checkpoint["model"].values()))
         validation = [
             json.loads(line) for line in (Path(config["output"]) / "validation.jsonl").read_text().splitlines()

@@ -53,36 +53,27 @@ def validate_optimization(config):
 
 
 def backbone_layer(name, backbone):
-    if hasattr(backbone, "blocks"):
-        last_layer = len(backbone.blocks) + 1
-        if name.startswith("blocks."):
-            return int(name.split(".")[1]) + 1, last_layer
-        if name.startswith("patch_embed.") or any(token in name for token in ("token", "pos_embed")):
+    if backbone.config.model_type == "dinov3_vit":
+        last_layer = backbone.config.num_hidden_layers + 1
+        if name.startswith("model.layer."):
+            return int(name.split(".")[2]) + 1, last_layer
+        if name.startswith(("embeddings.", "rope_embeddings.")):
             return 0, last_layer
         return last_layer, last_layer
-    if hasattr(backbone, "stages"):
-        depths = [len(stage) for stage in backbone.stages]
+    if backbone.config.model_type == "dinov3_convnext":
+        depths = backbone.config.depths
         last_layer = sum(depths) + 1
-        if name.startswith("stages."):
+        if name.startswith("model.stages."):
             parts = name.split(".")
-            return sum(depths[: int(parts[1])]) + int(parts[2]) + 1, last_layer
-        if name.startswith("downsample_layers."):
-            stage = int(name.split(".")[1])
-            return sum(depths[:stage]), last_layer
+            stage = int(parts[2])
+            offset = sum(depths[:stage])
+            layer = offset + int(parts[4]) + 1 if parts[3] == "layers" else offset
+            return layer, last_layer
         return last_layer, last_layer
     raise ValueError("Layer-wise learning rates require a ViT or ConvNeXt backbone")
 
 
-def parameter_groups(model, config, legacy=False):
-    if legacy:
-        return [
-            {
-                "params": [parameter for parameter in model.parameters() if parameter.requires_grad],
-                "lr_multiplier": 1.0,
-                "wd_multiplier": 1.0,
-                "is_last_layer": False,
-            }
-        ]
+def parameter_groups(model, config):
     options = config["optimization"]
     groups = {}
     for name, parameter in model.named_parameters():
@@ -93,7 +84,7 @@ def parameter_groups(model, config, legacy=False):
         if section == "backbone":
             layer, last_layer = backbone_layer(relative_name, model.backbone)
             multiplier *= options["layer_decay"] ** (last_layer - layer)
-            if relative_name.startswith(("patch_embed.", "downsample_layers.0.")):
+            if relative_name.startswith(("embeddings.patch_embeddings.", "model.stages.0.downsample_layers.")):
                 multiplier *= options["patch_embed_lr_multiplier"]
         no_decay = parameter.ndim <= 1 or any(
             token in name for token in ("norm", "gamma", "token", "pos_embed", "fourier_w")

@@ -27,18 +27,18 @@ class FineTuneTrainingTests(unittest.TestCase):
                     output = root / f"run_{two_views}_{contrastive}"
                     config.update(
                         model={
-                            "name": "custom_vit",
-                            "weights": None,
+                            "name_or_path": None,
                             "pooling": "cls",
                             "projection_dim": 8,
-                            "kwargs": {
-                                "img_size": 32,
+                            "backbone_config": {
+                                "model_type": "dinov3_vit",
+                                "image_size": 32,
                                 "patch_size": 16,
-                                "embed_dim": 32,
-                                "depth": 1,
-                                "num_heads": 2,
-                                "ffn_ratio": 2,
-                                "pos_embed_rope_dtype": "fp32",
+                                "hidden_size": 32,
+                                "num_hidden_layers": 1,
+                                "num_attention_heads": 2,
+                                "intermediate_size": 64,
+                                "num_register_tokens": 4,
                             },
                         },
                         data={"train": str(root / "data"), "val": str(root / "data"), "image_size": 32, "workers": 0},

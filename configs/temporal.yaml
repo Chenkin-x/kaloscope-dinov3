@@ -4,8 +4,7 @@ metadata: /path/to/artist_year_metadata
 panel: /path/to/dev_panel
 output: runs/temporal
 model:
-  name: dinov3_vitb16
-  weights: /path/to/dinov3_vitb16_pretrain.pth
+  name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
   pooling: cls_mean
   projection_dim: 256
 image_size: 512

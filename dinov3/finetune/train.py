@@ -1,7 +1,5 @@
 import argparse
-from contextlib import nullcontext
 import json
-import os
 from pathlib import Path
 import random
 import time
@@ -10,12 +8,11 @@ import uuid
 import torch
 import torch.distributed as dist
 import torch.nn.functional as functional
-from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler, Subset
 
 from .contrastive import MemoryBank, contrastive_loss, distributed
 from .data import FolderViews, image_transform
-from .model import FineTuneModel, load_weights, read_config, state_dict_from
+from .model import CHECKPOINT_VERSION, FineTuneModel, load_weights, read_config
 from .optimization import (
     OPTIMIZATION_DEFAULTS,
     ModelEMA,
@@ -23,10 +20,11 @@ from .optimization import (
     parameter_groups,
     validate_optimization,
 )
+from .runtime import create_accelerator
 
 
 DEFAULTS = {
-    "model": {"name": "dinov3_vits16", "projection_dim": 128},
+    "model": {"name_or_path": "facebook/dinov3-vits16-pretrain-lvd1689m", "projection_dim": 128},
     "data": {"train": "base", "val": None, "image_size": 224, "workers": 4},
     "epochs": 20,
     "batch_size": 16,
@@ -44,7 +42,6 @@ DEFAULTS = {
     "output": "runs/dinov3",
     "resume": None,
     "init_checkpoint": None,
-    "deepspeed": None,
     "wandb": None,
     "grad_clip": 1.0,
     "optimization": OPTIMIZATION_DEFAULTS,
@@ -90,64 +87,27 @@ def validate_config(config):
         raise ValueError("temperature/lr must be positive and grad_clip nonnegative")
 
 
-def rng_state():
-    return {
-        "python": random.getstate(),
-        "torch": torch.get_rng_state(),
-        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
-    }
-
-
-def restore_rng(state):
-    random.setstate(state["python"])
-    torch.set_rng_state(state["torch"])
-    if state["cuda"] and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["cuda"])
-
-
 def atomic_save(payload, path):
     temporary = path.with_suffix(".tmp")
     torch.save(payload, temporary)
     temporary.replace(path)
 
 
-def autocast_context(device, precision):
-    return torch.autocast(
-        device.type, dtype=torch.float16 if precision == "fp16" else torch.bfloat16, enabled=precision != "fp32"
-    )
-
-
-def reduce_totals(totals):
-    if distributed():
-        dist.all_reduce(totals)
-    return totals
-
-
 @torch.no_grad()
-def evaluate(model, loader, device, precision, synchronized=False, image_size=224):
+def evaluate(model, loader, accelerator):
     model.eval()
-    totals = torch.zeros(3, device=device, dtype=torch.float64)
-    iterations = torch.tensor(len(loader), device=device)
-    if synchronized and distributed():
-        dist.all_reduce(iterations, op=dist.ReduceOp.MAX)
-    iterator = iter(loader)
-    for _ in range(int(iterations)):
-        batch = next(iterator, None)
-        if batch is None:
-            images = torch.zeros(1, 3, image_size, image_size, device=device)
-            labels = None
-        else:
-            images, _, labels, _ = batch
-            images, labels = images.to(device), labels.to(device)
-        if synchronized:
-            images = images.to(dtype=next(model.parameters()).dtype)
-        with autocast_context(device, precision):
+    totals = torch.zeros(3, device=accelerator.device, dtype=torch.float64)
+    dtype = next(model.parameters()).dtype
+    # ZeRO-2 keeps full weights on each rank, so uneven validation shards need no padding.
+    for images, _, labels, _ in loader:
+        images = images.to(accelerator.device, dtype=dtype, non_blocking=True)
+        labels = labels.to(accelerator.device)
+        with accelerator.autocast():
             output = model(images)
-        if labels is not None and "logits" in output:
-            totals[0] += functional.cross_entropy(output["logits"].float(), labels, reduction="sum")
-            totals[1] += output["logits"].argmax(1).eq(labels).sum()
-            totals[2] += len(labels)
-    totals = reduce_totals(totals)
+        totals[0] += functional.cross_entropy(output["logits"].float(), labels, reduction="sum")
+        totals[1] += output["logits"].argmax(1).eq(labels).sum()
+        totals[2] += len(labels)
+    totals = accelerator.reduce(totals, reduction="sum")
     if totals[2] == 0:
         return {}
     return {"val/loss": (totals[0] / totals[2]).item(), "val/accuracy": (totals[1] / totals[2]).item()}
@@ -156,30 +116,16 @@ def evaluate(model, loader, device, precision, synchronized=False, image_size=22
 def train(config):
     config = {**DEFAULTS, **config, "optimization": {**OPTIMIZATION_DEFAULTS, **config.get("optimization", {})}}
     validate_config(config)
-    use_deepspeed = bool(config["deepspeed"])
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-        device = torch.device("cuda", local_rank)
-    else:
-        device = torch.device("cpu")
-    if device.type == "cpu" and config["precision"] == "fp16":
-        raise ValueError("CPU training supports fp32 or bf16")
-    if use_deepspeed:
-        if device.type != "cuda":
-            raise ValueError("This DeepSpeed entry point requires CUDA on Linux/WSL2")
-        import deepspeed
+    accelerator = create_accelerator(config, config["grad_clip"])
+    try:
+        _train(config, accelerator)
+    finally:
+        accelerator.end_training()
 
-        deepspeed.init_distributed(dist_backend="nccl", auto_mpi_discovery=False)
-    elif world_size > 1 and not distributed():
-        dist.init_process_group("nccl" if device.type == "cuda" else "gloo")
-    rank = dist.get_rank() if distributed() else 0
-    world_size = dist.get_world_size() if distributed() else 1
-    if use_deepspeed and (not distributed() or world_size < 1):
-        raise RuntimeError("DeepSpeed did not initialize a distributed process group")
-    if use_deepspeed and device.type == "cuda" and local_rank >= torch.cuda.device_count():
-        raise ValueError(f"LOCAL_RANK={local_rank} exceeds visible CUDA devices ({torch.cuda.device_count()})")
+
+def _train(config, accelerator):
+    device = accelerator.device
+    rank, world_size = accelerator.process_index, accelerator.num_processes
     random.seed(config["seed"] + rank)
     torch.manual_seed(config["seed"] + rank)
     data_config = config["data"]
@@ -218,9 +164,9 @@ def train(config):
             num_workers=data_config["workers"],
         )
     resume = load_weights(config["resume"]) if config["resume"] else None
-    legacy_resume = bool(resume and "schedule" not in resume)
-    legacy_groups = legacy_resume or bool(resume and resume.get("legacy_parameter_groups", False))
     if resume:
+        if resume["format_version"] != CHECKPOINT_VERSION:
+            raise ValueError("Resume requires a Transformers-backed checkpoint")
         resume_config = {
             **DEFAULTS,
             **resume["config"],
@@ -232,71 +178,32 @@ def train(config):
         if resume["classes"] != dataset.classes or resume["world_size"] != world_size:
             raise ValueError("Resume requires unchanged class mapping and world size")
     num_classes = len(dataset.classes) if config["classification_weight"] else 0
-    model = FineTuneModel(config["model"], num_classes, initialize=not bool(resume))
+    initial = load_weights(config["init_checkpoint"]) if config["init_checkpoint"] and not resume else None
+    model_config = resume["model_config"] if resume else config["model"]
+    if initial:
+        model_config = {**model_config, "backbone_config": initial["model_config"]["backbone_config"]}
+    model = FineTuneModel(model_config, num_classes, initialize=not bool(resume or initial))
     if resume:
         model.load_state_dict(resume["model"], strict=True)
-    elif config["init_checkpoint"]:
-        model.load_state_dict(state_dict_from(load_weights(config["init_checkpoint"])), strict=True)
+    elif initial:
+        model.load_state_dict(initial["model"], strict=True)
     model.set_train_scope(config["train_scope"], contrastive)
     model.to(device)
     ema_enabled = config["optimization"]["ema_decay"] is not None
     ema = ModelEMA(model.state_dict()) if ema_enabled and rank == 0 else None
     bank = MemoryBank(config["memory_bank_size"], config["model"]["projection_dim"]).to(device)
     optimizer = torch.optim.AdamW(
-        parameter_groups(model, config, legacy=legacy_groups),
+        parameter_groups(model, config),
         lr=config["lr"],
         weight_decay=config["weight_decay"],
     )
     schedule = TrainingSchedule(config, len(loader))
-    scaler = torch.amp.GradScaler(device.type, enabled=config["precision"] == "fp16" and not use_deepspeed)
-    engine = None
-    if use_deepspeed:
-        ds_config = (
-            read_config(config["deepspeed"]) if isinstance(config["deepspeed"], str) else dict(config["deepspeed"])
-        )
-        expected = {
-            "train_micro_batch_size_per_gpu": config["batch_size"],
-            "gradient_accumulation_steps": 1,
-            "train_batch_size": config["batch_size"] * world_size,
-        }
-        for key, value in expected.items():
-            if key in ds_config and ds_config[key] != value:
-                raise ValueError(f"DeepSpeed {key} must equal {value}")
-            ds_config[key] = value
-        if "optimizer" in ds_config or "scheduler" in ds_config:
-            raise ValueError(
-                "Set optimizer in the training config; DeepSpeed optimizer/scheduler overrides are unsupported"
-            )
-        for precision in ("fp16", "bf16"):
-            enabled = config["precision"] == precision
-            if precision in ds_config and ds_config[precision].get("enabled", False) != enabled:
-                raise ValueError("DeepSpeed precision must match training precision")
-            ds_config[precision] = {**ds_config.get(precision, {}), "enabled": enabled}
-        ds_config["gradient_clipping"] = config["grad_clip"]
-        engine, optimizer, _, _ = deepspeed.initialize(model=model, optimizer=optimizer, config=ds_config)
-        runner = engine
-    elif distributed():
-        runner = DistributedDataParallel(
-            model, device_ids=[local_rank] if device.type == "cuda" else None, find_unused_parameters=True
-        )
-    else:
-        runner = model
+    runner, optimizer = accelerator.prepare(model, optimizer)
     start_epoch, global_step = 0, 0
     if resume:
         bank.load_state_dict(resume["bank"])
-        if engine:
-            checkpoint_dir = Path(config["resume"]).resolve().parent / "deepspeed"
-            loaded, _ = engine.load_checkpoint(str(checkpoint_dir), tag=resume["deepspeed_tag"])
-            if loaded is None:
-                raise ValueError("DeepSpeed optimizer checkpoint is missing")
-        else:
-            optimizer.load_state_dict(resume["optimizer"])
-            scaler.load_state_dict(resume["scaler"])
         start_epoch, global_step = resume["epoch"] + 1, resume["global_step"]
-        if legacy_resume:
-            schedule.step = global_step
-        else:
-            schedule.load_state_dict(resume["schedule"])
+        schedule.load_state_dict(resume["schedule"])
         if ema is not None:
             ema.load_state_dict(resume["ema"])
     output = Path(config["output"])
@@ -322,7 +229,7 @@ def train(config):
             encoding="utf-8",
         )
     if resume:
-        restore_rng(resume["rng"][rank])
+        accelerator.load_state(Path(config["resume"]).resolve().parent / resume["accelerate_state"])
     try:
         for epoch in range(start_epoch, config["epochs"]):
             sampler.set_epoch(epoch)
@@ -332,13 +239,12 @@ def train(config):
                 base_lr, weight_decay = schedule.apply(optimizer)
                 ema_decay = schedule.ema_decay() if ema_enabled else None
                 images = torch.cat((first, second)) if two_views else first
-                images = images.to(device, non_blocking=True)
+                images = images.to(device, dtype=next(model.parameters()).dtype, non_blocking=True)
                 labels, ids = labels.to(device), ids.to(device)
                 targets = labels.repeat(2) if two_views else labels
                 sample_ids = ids.repeat(2) if two_views else ids
-                if engine:
-                    images = images.to(dtype=next(model.parameters()).dtype)
-                with autocast_context(device, config["precision"]):
+                optimizer.zero_grad(set_to_none=True)
+                with accelerator.autocast():
                     result = runner(images, contrastive=contrastive)
                     classification = (
                         functional.cross_entropy(
@@ -365,30 +271,15 @@ def train(config):
                     dist.all_reduce(finite, op=dist.ReduceOp.MIN)
                 if not finite.item():
                     raise FloatingPointError("Nonfinite loss on at least one rank")
-                if engine:
-                    skipped_before = engine.skipped_steps
-                    engine.backward(loss)
-                    engine.step()
-                    updated = engine.skipped_steps == skipped_before
-                else:
-                    optimizer.zero_grad(set_to_none=True)
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(optimizer)
-                    if config["grad_clip"]:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip"])
-                    scale_before = scaler.get_scale()
-                    scaler.step(optimizer)
-                    scaler.update()
-                    updated = scaler.get_scale() >= scale_before
+                # Under ZeRO-2, backward also runs the engine's clipping and optimizer step.
+                accelerator.backward(loss)
+                if config["grad_clip"]:
+                    accelerator.clip_grad_norm_(model.parameters(), config["grad_clip"])
+                optimizer.step()
+                updated = not accelerator.optimizer_step_was_skipped
                 if updated and ema_enabled:
-                    context = (
-                        deepspeed.zero.GatheredParameters(list(model.parameters()), modifier_rank=None)
-                        if engine and engine.zero_optimization_stage() == 3
-                        else nullcontext()
-                    )
-                    with context:
-                        if ema is not None:
-                            ema.update(model.state_dict(), ema_decay)
+                    if ema is not None:
+                        ema.update(model.state_dict(), ema_decay)
                 if contrastive and updated:
                     bank.enqueue(result["projections"], targets, sample_ids)
                 if updated:
@@ -418,7 +309,7 @@ def train(config):
                     with (output / "steps.jsonl").open("a", encoding="utf-8") as stream:
                         stream.write(json.dumps(progress) + "\n")
                     print(json.dumps({"stage": "train_step", **progress}), flush=True)
-            totals = reduce_totals(totals)
+            totals = accelerator.reduce(totals, reduction="sum")
             metrics = {
                 "epoch": epoch + 1,
                 "train/loss": (totals[0] / totals[4]).item(),
@@ -437,35 +328,15 @@ def train(config):
             if num_classes:
                 metrics["train/accuracy"] = (totals[3] / totals[4]).item()
             if validation is not None and num_classes:
-                metrics.update(
-                    evaluate(
-                        engine if engine else model,
-                        validation,
-                        device,
-                        config["precision"],
-                        synchronized=bool(engine),
-                        image_size=data_config["image_size"],
-                    )
-                )
-            states = [None] * world_size
-            if distributed():
-                dist.all_gather_object(states, rng_state())
-            else:
-                states[0] = rng_state()
-            tag = f"epoch_{epoch + 1:04d}"
-            if engine:
-                engine.save_checkpoint(str(output / "deepspeed"), tag=tag)
-            weights = (
-                engine._zero3_consolidated_16bit_state_dict()
-                if engine and engine.zero_optimization_stage() == 3
-                else model.state_dict()
-            )
+                metrics.update(evaluate(model, validation, accelerator))
+            # All ranks save optimizer shards and RNG; last.pt remains a standalone model export.
+            accelerator.save_state(output / "state")
+            weights = accelerator.get_state_dict(runner)
             if rank == 0:
                 payload = {
-                    "format_version": 2,
-                    "legacy_parameter_groups": legacy_groups,
+                    "format_version": CHECKPOINT_VERSION,
                     "model": weights,
-                    "model_config": config["model"],
+                    "model_config": model.model_config,
                     "num_classes": num_classes,
                     "classes": dataset.classes,
                     "config": config,
@@ -473,13 +344,10 @@ def train(config):
                     "global_step": global_step,
                     "world_size": world_size,
                     "bank": bank.state_dict(),
-                    "optimizer": None if engine else optimizer.state_dict(),
-                    "scaler": scaler.state_dict(),
                     "schedule": schedule.state_dict(),
                     "ema": ema.state_dict() if ema is not None else None,
-                    "rng": states,
                     "wandb_id": run_id,
-                    "deepspeed_tag": tag if engine else None,
+                    "accelerate_state": "state",
                 }
                 atomic_save(payload, output / "last.pt")
                 with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
@@ -487,9 +355,7 @@ def train(config):
                 print(json.dumps(metrics), flush=True)
                 if wandb_run:
                     wandb_run.log(metrics, step=global_step)
-            if distributed():
-                dist.barrier()
-            restore_rng(states[rank])
+            accelerator.wait_for_everyone()
         if wandb_run and config["wandb"].get("upload_checkpoint", False) and (output / "last.pt").exists():
             import wandb
 
@@ -500,15 +366,12 @@ def train(config):
     finally:
         if wandb_run:
             wandb_run.finish()
-        if distributed():
-            dist.destroy_process_group()
 
 
 def main():
     parser = argparse.ArgumentParser(description="DINOv3 ImageFolder training")
     parser.add_argument("--config", required=True)
     parser.add_argument("--resume")
-    parser.add_argument("--local_rank", "--local-rank", type=int, default=0)
     args = parser.parse_args()
     config = resolve_config(args.config)
     if args.resume:

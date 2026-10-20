@@ -4,7 +4,9 @@ from pathlib import Path
 from dinov3.finetune.model import read_config
 
 DEFAULTS = {
-    "model": {"name": "dinov3_vitb16", "weights": None, "pooling": "cls_mean", "projection_dim": 256},
+    "model": {
+        "name_or_path": "facebook/dinov3-vitb16-pretrain-lvd1689m", "pooling": "cls_mean", "projection_dim": 256
+    },
     "paths": None,
     "metadata": None,
     "panel": None,

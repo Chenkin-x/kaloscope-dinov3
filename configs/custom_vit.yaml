@@ -1,17 +1,16 @@
 model:
-  name: custom_vit
-  weights: null
+  name_or_path: null  # Explicit random initialization.
   pooling: cls
   projection_dim: 128
-  kwargs:
-    img_size: 224
+  backbone_config:
+    model_type: dinov3_vit
+    image_size: 224
     patch_size: 16
-    embed_dim: 384
-    depth: 12
-    num_heads: 6
-    ffn_ratio: 4
-    n_storage_tokens: 4
-    pos_embed_rope_dtype: fp32
+    hidden_size: 384
+    intermediate_size: 1536
+    num_hidden_layers: 12
+    num_attention_heads: 6
+    num_register_tokens: 4
 data:
   train: base
   image_size: 224

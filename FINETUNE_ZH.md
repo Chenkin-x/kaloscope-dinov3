@@ -145,8 +145,7 @@ data:
 
 ```yaml
 model:
-  name: dinov3_vits16
-  weights: /path/to/dinov3_vits16_pretrain.pth
+  name_or_path: facebook/dinov3-vits16-pretrain-lvd1689m
   pooling: cls
   projection_dim: 128
 data:
@@ -166,10 +165,11 @@ output: runs/dinov3
 ```
 
 ```bash
-python -m dinov3.finetune.train --config configs/finetune.yaml
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train.py --config configs/finetune.yaml
 ```
 
-示例文件默认 `weights: null`，即随机初始化；使用预训练必须填写权重路径、HTTPS URL 或仓库支持的权重枚举。预训练文件需要自行通过官方授权渠道取得。`bf16` 需要硬件支持，不支持时用 `fp32`；CUDA 也可使用 `fp16`。Windows 数据加载出现问题时可以将 `workers` 设为 `0`。
+示例默认通过 Transformers 加载预训练模型。`model.name_or_path` 可以是 HF 模型 ID 或包含 `config.json`、权重文件的本地目录；官方 gated 模型需要获得权限并登录 HF。`bf16` 需要硬件支持，不支持时用 `fp32`；CUDA 也可使用 `fp16`。Windows 数据加载出现问题时可以将 `workers` 设为 `0`。
 
 ## 三种训练范围
 
@@ -183,9 +183,16 @@ python -m dinov3.finetune.train --config configs/finetune.yaml
 
 如果要保留已有分类头但冻结它，让分类损失只更新骨干，可设置 `train_scope: backbone`、正的 `classification_weight`，并通过 `init_checkpoint` 加载完整已训练模型；不能对随机初始化且冻结的分类头直接开始训练。
 
-加载一个已训练模型的骨干，重新训练分类头：将它的 `last.pt` 填入 `model.weights`，设置 `train_scope: head`。新的分类头根据当前类别数随机初始化。`model.weights` 也支持官方纯骨干 state_dict，以及含 `teacher` / `student` / `state_dict` / `model` 和 `backbone.` 前缀的普通 PyTorch 权重封装；严格匹配模型参数，尺寸不匹配会直接报错，不静默忽略。
+重新训练分类头时，先把训练骨干导出为 Transformers 目录：
 
-`init_checkpoint: /path/to/last.pt` 加载整个模型参数用于新一轮训练，要求架构、分类头和投影器结构匹配；不会恢复优化器、epoch 或队列。若类别含义不同，即使类别数量相同，也应使用 `model.weights` 重新初始化分类头。
+```python
+from dinov3.finetune.infer import Predictor
+model = Predictor(checkpoint="runs/dinov3/last.pt", device="cpu").model
+model.backbone.save_pretrained("exported_backbone")
+```
+
+然后设置 `model.name_or_path: exported_backbone` 和 `train_scope: head`。
+`init_checkpoint: /path/to/last.pt` 加载当前格式的完整模型参数，用于新一轮训练，要求架构、分类头和投影器匹配；不会恢复优化器、epoch 或队列。
 
 ## 对比学习与 memory bank
 
@@ -237,7 +244,7 @@ optimization:
 
 将 `ema_decay` 设为例如 `0.999` 开启指数滑动平均；可通过 `ema_decay_end: 0.9999` 让衰减系数随训练余弦变化。EMA 对训练模型的参数做平滑，不参与损失计算，也不作为 memory bank 的动量编码器。训练中的验证指标仍使用当前模型。
 
-EMA 在 rank 0 的 CPU 上以 FP32 保存，浮点状态做滑动平均，整数状态直接复制。开启后需要额外 CPU 内存及每步数据传输。ZeRO-3 每次 EMA 更新都需要所有进程参与完整参数收集，成本较高；大模型建议先关闭 EMA。checkpoint 同时保存普通模型、EMA 权重和 EMA 更新次数。
+EMA 在 rank 0 的 CPU 上以 FP32 保存，浮点状态做滑动平均，整数状态直接复制。开启后需要额外 CPU 内存及每步数据传输。ZeRO-2 下直接读取 rank 0 的完整参数更新 EMA。checkpoint 同时保存普通模型、EMA 权重和 EMA 更新次数。
 
 推理时明确选择 EMA：
 
@@ -253,59 +260,45 @@ checkpoint 保存成功更新次数、调度总长度、warmup/冻结长度和 E
 
 ## 模型型号与自定义结构
 
-支持当前仓库提供的所有骨干：
+`model.name_or_path` 接受 Transformers 的 DINOv3 ViT 或 ConvNeXt 模型，例如
+`facebook/dinov3-vitb16-pretrain-lvd1689m`。实现和参数命名由 Transformers 5.8.x 管理。
 
-```text
-dinov3_vits16       dinov3_vits16plus
-dinov3_vitb16       dinov3_vitl16       dinov3_vitl16plus
-dinov3_vith16plus   dinov3_vit7b16
-dinov3_convnext_tiny   dinov3_convnext_small
-dinov3_convnext_base   dinov3_convnext_large
-```
+`model.pooling` 支持 `cls`、`mean`（patch 平均）、`cls_mean`（CLS 与 patch 平均拼接）。
+ViT 的 patch 特征排除 register tokens；ConvNeXt 的 CLS 对应归一化后的全局池化。
+输入图像尺寸应与骨干下采样倍率兼容。既有数据预处理不替换为 HF processor，避免改变训练配方的裁剪和增强。
 
-`model.weights` 可用 `LVD1689M` 或 `SAT493M`，但只有官方实际发布且当前构造器支持的型号/数据集组合能下载成功。大模型的内存与显存需求不会因为入口统一而降低
-
-`model.pooling` 支持 `cls`、`mean`（patch 平均）、`cls_mean`（CLS 与 patch 平均拼接）。输入图像尺寸应与 ViT 的 patch size 兼容
-
-需要修改宽度、深度、头数、patch size 等架构参数，使用 `custom_vit` 或 `custom_convnext`，把构造参数写入 `model.kwargs`。参见 `configs/custom_vit.yaml`；ViT 参数对应 `DinoVisionTransformer`，ConvNeXt 参数对应 `ConvNeXt`，例如：
+显式随机初始化使用 `name_or_path: null` 和 HF `backbone_config`。ViT 示例见 `configs/custom_vit.yaml`；ConvNeXt 示例：
 
 ```yaml
 model:
-  name: custom_convnext
-  kwargs:
+  name_or_path: null
+  backbone_config:
+    model_type: dinov3_convnext
     depths: [3, 3, 9, 3]
-    dims: [96, 192, 384, 768]
+    hidden_sizes: [96, 192, 384, 768]
 ```
 
-预设型号的固定架构参数不要通过 `kwargs` 重复传入。自定义结构加载官方权重时，必须匹配原架构，包括 storage tokens、FFN 和归一化配置
+新 checkpoint 的 `model_config.backbone_config` 保存完整架构，恢复时通过 `AutoModel.from_config` 构造，无需重新下载初始权重。
+当前 checkpoint 格式为 3；旧原生 `.pth` 和旧格式断点不直接兼容，不做自动猜测或回退。
 
-## DDP / DeepSpeed
+## Accelerate / ZeRO-2
+
+普通微调和时间窗口训练均使用 Accelerate；默认启动配置为 ZeRO-2：
 
 ```bash
-torchrun --standalone --nproc_per_node=2 -m dinov3.finetune.train --config configs/finetune.yaml
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train.py --config configs/finetune.yaml
 ```
 
-使用 DeepSpeed：
+`--num_processes` 改为实际 GPU 数量。训练 YAML 不再设置 `deepspeed` 字段，
+并行配置统一放在 `configs/accelerate_zero2.yaml` 与其引用的 `deepspeed_zero2.json` 中。
+`precision` 仍由训练 YAML 控制；`grad_clip` 写入 DeepSpeed 配置，由引擎在更新时执行。
+优化器和学习率调度保留项目原有实现，交给 `accelerator.prepare` 包装模型和优化器。
 
-```bash
-pip install -e ".[deepspeed]"
-```
-
-在训练 YAML 设置 `deepspeed: configs/deepspeed_zero2.json`，可用官方 DeepSpeed launcher：
-
-```bash
-deepspeed --num_gpus=2 -m dinov3.finetune.train --config configs/finetune.yaml
-```
-
-也支持官方常用的 torchrun launcher：
-
-```bash
-torchrun --standalone --nproc_per_node=2 -m dinov3.finetune.train --config configs/finetune.yaml
-```
-
-两种方式都会由 DeepSpeed 初始化 NCCL process group；不要在外层再包一层 DDP。单卡 DeepSpeed 也可用 `deepspeed --num_gpus=1` 或 `torchrun --standalone --nproc_per_node=1`，确保分布式环境变量完整
-
-提供 ZeRO-2 示例；也可将 `zero_optimization.stage` 改为 `3`。ZeRO-3 导出时所有进程参与参数合并，rank 0 写出可直接推理的 `last.pt`，需要足够 CPU 内存。优化器由训练入口统一创建；DeepSpeed 配置不接受另设 optimizer / scheduler。当前梯度累积固定为 1，DeepSpeed 的 batch 参数和混合精度必须与训练 YAML 一致，冲突会报错。`batch_size` 指每进程原始图片数，`train_batch_size = batch_size × GPU 数量 × gradient_accumulation_steps`，入口会强制校验这些值
+当前梯度累积为 1，`batch_size` 是每卡原始图片数，global batch 为 `batch_size × GPU 数量`。
+双视图会使实际前向图像数翻倍。两个入口都已有按 rank 分片的采样器，不再对 DataLoader 调用 `prepare`。
+可导特征 gather 保留 autograd，不用无梯度的指标 gather 替换。评估直接使用 ZeRO-2 每卡的完整模型参数。
+这里只维护 ZeRO-2 的训练路径，不能仅修改配置中的 stage 就当作 ZeRO-3 使用。
 
 ## 保存与恢复
 
@@ -316,28 +309,31 @@ config.json       解析后的配置
 classes.json      类别名称顺序
 metrics.jsonl     每轮损失、准确率、学习率、队列容量和可选验证指标
 parameter_groups.json  优化器分组、参数名称和学习率/decay 倍率
-last.pt           最新完整 checkpoint，也可直接用于推理
-deepspeed/        仅 DeepSpeed：按 epoch 保存的分片训练状态
+last.pt           模型权重、配置、memory bank、调度、EMA 和训练位置；可独立推理
+state/            Accelerate 保存的最新模型、优化器分片、scaler 和各 rank RNG
 ```
 
 ```bash
-python -m dinov3.finetune.train --config configs/finetune.yaml --resume runs/dinov3/last.pt
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train.py --config configs/finetune.yaml --resume runs/dinov3/last.pt
 ```
 
-DeepSpeed 恢复时用 `torchrun` 执行上述入口。模型、优化器、FP16 scaler、memory bank、学习率/weight decay 调度、可选 EMA、epoch、global step、各进程随机数状态以及 W&B run ID 会恢复。DeepSpeed 必须保留 `last.pt` 同目录下的 `deepspeed/` 及对应 epoch 分片；单独的 `last.pt` 仅足够推理
+保存和恢复由 `accelerator.save_state / load_state` 负责，每个 rank 都参与。
+`last.pt` 和 `state/` 必须来自同一次保存，并放在同一输出目录；每次保存覆盖最新状态。
+完整恢复还包括 memory bank、学习率/weight decay 调度、EMA、epoch、global step 和 W&B run ID。
+迁移前手动 DDP / DeepSpeed 保存的训练状态不能直接续训，但 Transformers 格式 3 的模型权重仍可用于推理或初始化。
 
-恢复发生在完整 epoch 边界，不支持中途 minibatch 精确续跑。保持数据内容、类别映射、进程数和训练配置一致；可修改 `epochs`（总轮数）、`output` 和 W&B 配置。需要更换学习率、数据或训练范围时应使用 `model.weights` 或 `init_checkpoint` 开始新任务
+恢复发生在完整 epoch 边界，不支持中途 minibatch 精确续跑。保持数据内容、类别映射、进程数和训练配置一致；可修改 `epochs`（总轮数）、`output` 和 W&B 配置。需要更换学习率、数据或训练范围时应导出骨干并设置 `model.name_or_path`，或用 `init_checkpoint` 开始新任务
 
 ## W&B
 
-安装 W&B 额外依赖并登录（也可以只设置 `WANDB_API_KEY` 环境变量）：
+使用环境中已有的 W&B 并登录（也可以只设置 `WANDB_API_KEY` 环境变量）：
 
 ```bash
-pip install -e ".[finetune]"
 wandb login
 ```
 
-普通 PyTorch 单卡或 `torchrun` 多卡训练都使用同一个 YAML 配置：
+在训练 YAML 中设置：
 
 ```yaml
 wandb:
@@ -350,14 +346,11 @@ wandb:
 然后运行：
 
 ```bash
-python -m dinov3.finetune.train --config configs/finetune.yaml
-# 多卡普通 PyTorch
-torchrun --standalone --nproc_per_node=2 -m dinov3.finetune.train --config configs/finetune.yaml
-# 多卡 DeepSpeed（配置中同时设置 deepspeed）
-deepspeed --num_gpus=2 -m dinov3.finetune.train --config configs/finetune.yaml
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train.py --config configs/finetune.yaml
 ```
 
-`mode: online` 实时上传；没有网络时用 `mode: offline`，训练完成后在 W&B 输出目录执行 `wandb sync <offline-run-dir>`。`mode: disabled` 可用于本地冒烟测试。`upload_checkpoint: true` 仅在训练成功完成后上传 artifact；设置为 `false` 或删除该字段只上传指标
+`mode: online` 实时上传；没有网络时用 `mode: offline`，训练完成后在 W&B 输出目录执行 `wandb sync <offline-run-dir>`。`mode: disabled` 关闭上传。`upload_checkpoint: true` 仅在训练成功完成后上传 artifact；设置为 `false` 或删除该字段只上传指标
 
 只由 rank 0 上传运行配置、每轮训练与验证指标，恢复时复用 run ID。`upload_checkpoint: true` 会在训练完成后上传 `last.pt` 和 `classes.json` 模型 artifact；不上传原始图片。DeepSpeed artifact 可推理，但恢复训练还需要本地分片目录。离线记录可设 `mode: offline`，后续用 `wandb sync` 上传；完全关闭用 `wandb: null`。账号、网络和 SDK 服务需在目标环境可用
 
@@ -383,9 +376,9 @@ python -m dinov3.finetune.infer --checkpoint runs/dinov3/last.pt --input /path/t
 python -m dinov3.finetune.infer --config configs/finetune.yaml --input /path/to/images --output outputs/pretrained
 ```
 
-如果 `model.weights` 的权重中含 `backbone.*` 和 `head.*` / `linear_head.*`，推理会检测并加载分类头；若没有类别元数据则返回数字类别名称。完整训练 checkpoint 最好使用 `--checkpoint`，自动还原预处理和结构
+完整训练 checkpoint 使用 `--checkpoint`，自动还原预处理、骨干、分类头和类别。配置加载仅加载骨干，不自动探测原生权重或分类头。
 
-官方独立分类头可用 `--head-weights /path/to/head.pth` 额外加载；官方 ViT-7B 分类头需要 `model.pooling: cls_mean`。`--classes classes.json` 可指定按分类头输出顺序排列的名称数组。未知第三方分类头结构不会被自动猜测
+独立 `nn.Linear.state_dict()` 分类头（`weight` 和可选的 `bias`）可用 `--head-weights /path/to/head.pth` 加载；官方 ViT-7B 分类头需要 `model.pooling: cls_mean`。`--classes classes.json` 可指定按分类头输出顺序排列的名称数组。未知第三方分类头结构不会被自动猜测
 
 Python 调用：
 

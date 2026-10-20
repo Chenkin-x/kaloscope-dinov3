@@ -18,20 +18,22 @@
 
 ## 文件格式和运行兼容性
 
+`recipe.yaml` 保留原研究实验的原生权重路径和配置，作为历史记录；`temporal.yaml` 已迁移到 Transformers 加载方式。历史结果不代表本次迁移后的重新训练结果。当前代码只恢复格式 3 的 Transformers checkpoint。
+
 每个目录的 `recipe.yaml` 使用统一的 **配方记录格式 v1**，不是 temporal CLI 的扁平配置。`trainer_config` 表示原生入口可表达的参数，`runtime`、`sampling`、`augmentation` 等记录其余复现要求，`compatibility` 明确缺失功能。
 
 **不要直接把 `recipe.yaml` 传给 `--config`，也不要只抽取 v2 的 `trainer_config` 运行并称之为 v2。** 只提高 batch 不会实现跨内容配对、灰度增强或真实 4K 梯度缓存。
 
-v1 另提供了主分支支持的扁平 `temporal.yaml`。编辑 paths、metadata、panel、model.weights、output 后：
+v1 另提供了主分支支持的扁平 `temporal.yaml`。编辑 paths、metadata、panel、model.name_or_path、output 后：
 
 ```bash
 ulimit -n 65536
-torchrun --standalone --nproc_per_node=8 \
-  -m dinov3.finetune.temporal.train \
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train_temporal.py \
   --config configs/kaloscope3/v1-sigmoid-2k/temporal.yaml
 ```
 
-v2 的完整训练当前由专用运行器执行；所需扩展已全部列入 `compatibility.required_extensions`。本次仅发布完整配置记录，不把实验运行器并入主分支。旧研究版检查点不能直接作为主分支 `format_version=1` 训练断点恢复；模型权重加载与完整优化器续训是不同接口。
+v2 的完整训练由专用运行器执行；所需扩展记录在 `compatibility.required_extensions`。这里只保留完整配置记录，实验运行器不在本仓库中。旧研究版检查点不能直接作为当前 Transformers 版的训练断点恢复；模型权重加载与完整优化器续训是不同接口。
 
 ## 复现和对照约束
 

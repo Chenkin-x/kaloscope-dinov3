@@ -3,19 +3,22 @@
 本入口将画师与发布时间作为弱监督信号，学习图像表征，不使用 CE、VICReg 或 Gram Anchoring。
 主包不依赖研究脚本、实验记录或服务器固定目录。
 
-## 安装与启动
+## 启动
 
-先安装适合运行环境的 PyTorch / torchvision，再执行：
+在已有依赖的环境中，从仓库根目录直接执行：
 
 ```bash
-pip install -e '.[temporal]'
-# 修改配置中的数据和权重路径；8 可以换成实际 GPU 数量。
-torchrun --standalone --nproc-per-node=8 -m dinov3.finetune.temporal.train --config configs/temporal.yaml
+# 修改配置中的数据路径和 model.name_or_path；8 可以换成实际 GPU 数量。
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train_temporal.py --config configs/temporal.yaml
 # 同一配置、同一 world size、同一数据，恢复 last.pt：
-torchrun --standalone --nproc-per-node=8 -m dinov3.finetune.temporal.train --config configs/temporal.yaml --resume
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train_temporal.py --config configs/temporal.yaml --resume
 ```
 
-单卡使用 `python -m dinov3.finetune.temporal.train --config ...`。无 CUDA 时支持 CPU，测试建议 `precision: fp32`。
+默认使用 Accelerate + DeepSpeed ZeRO-2，单卡将 `--num_processes` 改为 1。
+训练 YAML 的 `precision` 决定精度，`gradient_clip` 交给 DeepSpeed 执行。
+CPU 检查可显式设置 `ACCELERATE_USE_CPU=true` 并运行 `python train_temporal.py --config ...`，使用 `precision: fp32`。
 配置路径相对于启动时工作目录；`paths.npy` 内相对图片路径则相对于该文件所在目录。
 `output` 首次运行必须不存在；运行过程中创建 `output/STOP` 可在一个训练步骤结束后保存并停止，恢复前删除该文件。
 `--max-steps N` 是累计步数上限，可用于有限验证；它不表示已收敛。
@@ -53,7 +56,7 @@ gallery 和 query 分别至少包含 world size 个样本。每个被计入的�
   无时间内正样本的锚点仍保留，额外位置尝试选其他画师；没有可用配对数据时明确报错。
 - `batch_size` 为每进程图片数，global batch 必须至少 4 且能被 4 整除。梯度累积不等价于增加对比样本池，本入口不提供该替代。
 - 图像按 EXIF 转正、透明区域合成白底，短边缩放至 `image_size` 后中心裁剪，无拉伸、无随机裁剪。
-- 默认训练 ViT 第 8 层起的 blocks、最终 norm、投影头、温度与 bias；其他骨干层冻结。
+- 默认训练 ViT 从零编号第 8 层起的 blocks、最终 norm、投影头、温度与 bias；其他骨干层冻结。
 
 年份组用于均衡采样，正负关系仍由锚点相对天数判定；分组边界不会截断相邻年份的有效正样本。
 发布时间仅是创作时间的代理信号，不能等同于真实绘制日期。
@@ -70,8 +73,10 @@ gallery 和 query 分别至少包含 world size 个样本。每个被计入的�
 连续 3 次显著退化或表征不健康会独立停止，不标记收敛。`max_coverage_passes` 是运行上限，也不表示收敛。
 
 输出包含 `last.pt`、改善时的 `best.pt`、配置、步骤/验证日志及本运行独有的采样顺序缓存。
-checkpoint 保存模型、优化器、早停状态、逐 rank RNG 和 epoch 内位置。输入采用确定性中心裁剪，支持相同步数的恢复回归测试。
-已有研究入口的 checkpoint 格式不同，**不支持直接用 `--resume` 恢复**；正在运行的旧任务继续使用原入口，不自动迁移。
+`last.pt` 保存模型、早停状态和 epoch 内位置，`state/` 由 Accelerate 保存模型、优化器分片和逐 rank RNG；
+续训需要同时保留两者。`best.pt` 是最佳模型导出，不配套保存独立的优化器状态。
+配对顺序缓存已按 rank 切分，不经 Accelerate 二次分片。输入采用确定性中心裁剪，恢复会从已保存的 epoch 内位置继续。
+当前使用 Transformers 模型和 checkpoint 格式 3，断点内保存完整骨干配置；恢复不依赖初始模型目录或网络。旧原生 DINOv3 与已有研究入口的 checkpoint 参数命名、格式不同，**不支持直接用 `--resume` 恢复**，也不做自动迁移。
 
 导出特征时加载本入口的编码器，而不是 ImageFolder 分类预测器：
 
@@ -94,7 +99,7 @@ projector = features[:, model.feature_dim:]
 ## 开发验证
 
 ```bash
-CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -v
+CUDA_VISIBLE_DEVICES='' ACCELERATE_USE_CPU=true OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -v
 ```
 
 测试使用临时小图和随机初始化的小型 ViT，覆盖预处理、采样覆盖、时间边界、同家族排除、dev/test 隔离、

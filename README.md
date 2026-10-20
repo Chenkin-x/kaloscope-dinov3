@@ -1,55 +1,59 @@
-# DINOv3 kaloscope
+# Kaloscope DINOv3
 
-先安装与 CUDA 匹配的 PyTorch / torchvision，再安装本项目：
+使用 Transformers 加载 DINOv3，提供 ImageFolder 分类／对比微调，以及画师时间窗口 sigmoid 表征训练。
+骨干统一走 `AutoModel.from_pretrained`，不再维护内置 ViT、ConvNeXt 或 Torch Hub 下载代码。
+本项目使用 Transformers 5.8.x、Accelerate 1.13.x。两个训练入口统一通过 Accelerate 运行，
+默认启动配置为 DeepSpeed ZeRO-2。
+
+Clone 后在仓库根目录直接运行，不需要安装本项目。使用已有的 PyTorch / torchvision、
+Transformers、Accelerate 和 DeepSpeed 环境；`requirements.txt` 仅列出依赖。
 
 ```bash
-pip install -e ".[finetune]"
-python -m dinov3.finetune.train --config configs/finetune.yaml
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train.py --config configs/finetune.yaml
+# 时间窗口训练：
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train_temporal.py --config configs/temporal.yaml
 ```
 
-运行前修改 `configs/finetune.yaml` 中的数据目录和预训练权重路径。默认 `weights: null` 是随机初始化。
-
-```bash
-python -m dinov3.finetune.infer --checkpoint runs/dinov3/last.pt --input base --output outputs/features --patch-tokens
-```
-
-完整配置、恢复训练、DeepSpeed、W&B 和推理用法见 [中文使用说明](FINETUNE_ZH.md)。
-
-画师时间窗口 sigmoid 表征训练见 [训练说明](TEMPORAL_TRAINING_ZH.md) 和
-[配置示例](configs/temporal.yaml)。支持时间配对、画师年份组均衡采样、固定 dev 评估和平台期早停。
-
-通用 ImageFolder 入口可设置 `two_views: true`，在 `contrastive_weight: 0` 时进行双视图 CE；
-启用对比学习时自动使用双视图。`batch_size` 始终按原图计数，双视图实际前向图片数翻倍。
-步骤日志 `steps.jsonl` 同时记录原图数与视图数。图像加载统一处理 EXIF 方向和透明白底；
-相比旧版本，带透明通道或方向标记的图片可能产生不同特征。
-
-## 预训练模型与下载
-
-貌似meta官方所有的dinov3下载链接都死掉了，只能找modelscope上别人上传的仓库了，比如：
-- https://www.modelscope.cn/models/ciqiangxu/DINOv3/files
-
-支持的预设骨干名称（填写到 `model.name`）：
-
-| 型号 | 配置名称 |
-| --- | --- |
-| ViT-S/16 | `dinov3_vits16` |
-| ViT-S+/16 | `dinov3_vits16plus` |
-| ViT-B/16 | `dinov3_vitb16` |
-| ViT-L/16 | `dinov3_vitl16` |
-| ViT-L+/16 | `dinov3_vitl16plus` |
-| ViT-H+/16 | `dinov3_vith16plus` |
-| ViT-7B/16 | `dinov3_vit7b16` |
-| ConvNeXt Tiny | `dinov3_convnext_tiny` |
-| ConvNeXt Small | `dinov3_convnext_small` |
-| ConvNeXt Base | `dinov3_convnext_base` |
-| ConvNeXt Large | `dinov3_convnext_large` |
-
-下载与型号匹配的官方原生 PyTorch 骨干 `.pth` 权重后，在配置中填写本地路径：
+修改数据目录，并通过 `model.name_or_path` 指定 HF 模型 ID 或 Transformers 格式的本地目录：
 
 ```yaml
 model:
-  name: dinov3_vits16
-  weights: /path/to/dinov3_vits16_pretrain.pth
-  pooling: cls
-  projection_dim: 128
+  name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
+  pooling: cls_mean
+  projection_dim: 256
 ```
+
+官方模型需要先在 [Hugging Face 模型页面](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m)
+取得访问权限，然后 `hf auth login`。加载失败会直接报错，不会改成随机初始化。
+显式随机初始化使用 `name_or_path: null` 和 `backbone_config`，见 [custom_vit.yaml](configs/custom_vit.yaml)。
+
+| 骨干 | `model.name_or_path` |
+| --- | --- |
+| ViT-S/16 | `facebook/dinov3-vits16-pretrain-lvd1689m` |
+| ViT-B/16 | `facebook/dinov3-vitb16-pretrain-lvd1689m` |
+| ViT-L/16 | `facebook/dinov3-vitl16-pretrain-lvd1689m` |
+| ConvNeXt Tiny | `facebook/dinov3-convnext-tiny-pretrain-lvd1689m` |
+
+`pooling` 支持 `cls`、`mean` 和 `cls_mean`。ViT 的 patch 特征排除 CLS 和 register tokens；
+ConvNeXt 使用归一化后的全局池化和空间特征。图像增强、EXIF 方向、透明白底和归一化仍由现有数据管线处理。
+
+```bash
+python -m dinov3.finetune.infer --checkpoint runs/dinov3/last.pt \
+  --input base --output outputs/features --patch-tokens
+```
+
+`batch_size` 是每卡原始图像数，梯度累积固定为 1；训练精度读取训练 YAML 中的 `precision`。
+已有采样器按 rank 分片，因此只对模型和优化器调用 `accelerator.prepare`，避免二次切分配对样本。
+保存和恢复使用 [Accelerate 标准接口](https://huggingface.co/docs/accelerate/usage_guides/checkpoint)：
+`last.pt` 可独立推理，续训需要同时保留相邻的 `state/`（模型、优化器分片和各 rank RNG）。
+
+新 checkpoint 保存完整 HF 模型配置，可在没有初始预训练文件时恢复。旧原生 `.pth` 骨干和旧训练
+checkpoint 的参数命名不同，不支持直接加载或断点续训；本次不添加自动转换分支。
+需要单独导出微调骨干时，调用 `model.backbone.save_pretrained("exported_backbone")`，
+后续将该目录填入 `model.name_or_path`。
+
+完整配置、Accelerate ZeRO-2、W&B 和推理见 [微调说明](FINETUNE_ZH.md)。
+画师时间窗口训练见 [训练说明](TEMPORAL_TRAINING_ZH.md) 和 [配置](configs/temporal.yaml)。
+脚本不自动安装依赖，也不修改现有环境。

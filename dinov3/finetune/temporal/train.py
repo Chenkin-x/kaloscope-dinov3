@@ -1,10 +1,9 @@
-"""Single-process or torchrun artist-temporal training with exact step resume."""
+"""Accelerate artist-temporal training; default launcher uses DeepSpeed ZeRO-2."""
 
 import argparse
 import hashlib
 import json
 import math
-import os
 import random
 import time
 from pathlib import Path
@@ -13,9 +12,10 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.distributed.nn.functional import all_gather
-from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
+from ..model import CHECKPOINT_VERSION
+from ..runtime import create_accelerator
 from .config import resolve_config, validate_config
 from .control import Convergence
 from .data import Originals, load_metadata
@@ -65,23 +65,17 @@ def restore_rng(state, device):
 
 def train(config, resume=False, max_steps=0):
     validate_config(config)
-    world = int(os.environ.get("WORLD_SIZE", "1"))
-    local = int(os.environ.get("LOCAL_RANK", "0"))
-    device = torch.device("cuda", local) if torch.cuda.is_available() else torch.device("cpu")
-    if device.type == "cuda":
-        torch.cuda.set_device(device)
-    if world > 1:
-        dist.init_process_group("nccl" if device.type == "cuda" else "gloo")
+    accelerator = create_accelerator(config, config["gradient_clip"])
     try:
-        _train(config, resume, max_steps, device)
+        _train(config, resume, max_steps, accelerator)
     finally:
-        if dist.is_initialized():
-            dist.destroy_process_group()
+        accelerator.end_training()
 
 
-def _train(config, resume, max_steps, device):
-    distributed = dist.is_initialized()
-    rank, world = (dist.get_rank(), dist.get_world_size()) if distributed else (0, 1)
+def _train(config, resume, max_steps, accelerator):
+    device = accelerator.device
+    rank, world = accelerator.process_index, accelerator.num_processes
+    distributed = world > 1
     global_batch = config["batch_size"] * world
     if global_batch < 4 or global_batch % 4:
         raise ValueError("batch_size * world_size must be positive and divisible by 4")
@@ -99,36 +93,22 @@ def _train(config, resume, max_steps, device):
         checkpoint = torch.load(output / "last.pt", map_location="cpu", weights_only=False)
         if checkpoint.get("signature") != signature:
             raise ValueError("Resume requires unchanged configuration, world size and data manifests")
-        if checkpoint.get("format_version") != 1:
-            raise ValueError("Unsupported temporal checkpoint format")
+        if checkpoint.get("format_version") != CHECKPOINT_VERSION:
+            raise ValueError("Resume requires a Transformers-backed checkpoint")
     if rank == 0:
         if not resume:
             output.mkdir(parents=True, exist_ok=False)
         atomic_json(output / "config.json", signature)
         atomic_json(output / "status.json", {"status": "initializing", "time": time.time()})
 
-    def barrier():
-        if distributed:
-            dist.barrier()
-
-    barrier()
+    accelerator.wait_for_everyone()
     torch.manual_seed(config["seed"])
-    model = Encoder(config["model"], initialize=not resume).to(device)
+    model_config = checkpoint["model_config"] if checkpoint else config["model"]
+    model = Encoder(model_config, initialize=not resume).to(device)
     model.bias.data.fill_(-math.log(global_batch - 2))
-    if not hasattr(model.backbone, "blocks") or config["train_from_block"] >= len(model.backbone.blocks):
-        raise ValueError("Temporal training requires a ViT with train_from_block < number of blocks")
-    for name, parameter in model.backbone.named_parameters():
-        parameter.requires_grad_(
-            (name.startswith("blocks.") and int(name.split(".")[1]) >= config["train_from_block"])
-            or name.startswith("norm.")
-        )
+    model.set_train_from_block(config["train_from_block"])
     if checkpoint:
         model.load_state_dict(checkpoint["model"])
-    runner = (
-        DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" else None)
-        if distributed
-        else model
-    )
     groups = []
     for parameters, key in (
         ([p for p in model.backbone.parameters() if p.requires_grad], "backbone_lr"),
@@ -144,49 +124,44 @@ def _train(config, resume, max_steps, device):
             }
         )
     optimizer = torch.optim.AdamW(groups)
+    runner, optimizer = accelerator.prepare(model, optimizer)
     controller = Convergence(**config["early_stop"])
     step = epoch = offset = 0
     torch.manual_seed(config["seed"] + rank)
     random.seed(config["seed"] + rank)
     np.random.seed((config["seed"] + rank) % 2**32)
     if checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer"])
         controller.__dict__.update(checkpoint["controller"])
         step, epoch, offset = (checkpoint[k] for k in ("step", "epoch", "offset"))
-        restore_rng(checkpoint["rng"][rank], device)
+        accelerator.load_state(output / checkpoint["accelerate_state"])
         del checkpoint
     cache = output / "orders"
     if rank == 0:
         cache.mkdir(exist_ok=True)
-    barrier()
+    accelerator.wait_for_everyone()
     pool = None
     start, start_step = time.time(), step
 
     def save(best=False):
-        state = rng_state(device)
-        states = [None] * world if rank == 0 else None
-        if distributed:
-            dist.gather_object(state, states, dst=0)
-        else:
-            states = [state]
+        accelerator.save_state(output / "state")
+        weights = accelerator.get_state_dict(runner)
         if rank == 0:
             payload = {
-                "format_version": 1,
-                "model": model.state_dict(),
-                "model_config": config["model"],
+                "format_version": CHECKPOINT_VERSION,
+                "model": weights,
+                "model_config": model.model_config,
                 "signature": signature,
-                "optimizer": optimizer.state_dict(),
                 "controller": vars(controller),
                 "step": step,
                 "epoch": epoch,
                 "offset": offset,
-                "rng": states,
+                "accelerate_state": "state",
             }
             for name in ["last", "best"] if best else ["last"]:
                 temporary = output / f"{name}.tmp"
                 torch.save(payload, temporary)
                 temporary.replace(output / f"{name}.pt")
-        barrier()
+        accelerator.wait_for_everyone()
 
     def validate():
         state = rng_state(device)
@@ -222,7 +197,7 @@ def _train(config, resume, max_steps, device):
             order.flush()
             del order
             temporary.replace(path)
-        barrier()
+        accelerator.wait_for_everyone()
         order = np.load(path, mmap_mode="r")
         if order.shape != (steps_per_coverage, world, config["batch_size"]):
             raise ValueError("Invalid cached epoch order")
@@ -243,7 +218,7 @@ def _train(config, resume, max_steps, device):
             for group in optimizer.param_groups:
                 group["lr"] = group["base_lr"] * min(1.0, step / max(1, config["warmup_steps"])) * controller.factor
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device.type, dtype=torch.bfloat16, enabled=config["precision"] == "bf16"):
+            with accelerator.autocast():
                 features, temperature, bias = runner(images.to(device, non_blocking=True))
             features = torch.cat(all_gather(features.float())) if distributed else features.float()
             meta = torch.tensor(
@@ -265,9 +240,10 @@ def _train(config, resume, max_steps, device):
             loss = sigmoid_loss(features, temperature, bias, positive, negative)
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite sigmoid loss")
-            loss.backward()
-            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["gradient_clip"])
-            if not torch.isfinite(norm):
+            accelerator.backward(loss)
+            # DeepSpeed already clipped during backward; Accelerate returns that global norm.
+            norm = accelerator.clip_grad_norm_(model.parameters(), config["gradient_clip"])
+            if not math.isfinite(norm):
                 raise FloatingPointError("Nonfinite gradient")
             optimizer.step()
             if rank == 0 and (step <= 5 or step % config["log_every"] == 0):

@@ -1,6 +1,5 @@
 model:
-  name: dinov3_vits16
-  weights: null
+  name_or_path: facebook/dinov3-vits16-pretrain-lvd1689m
   pooling: cls
   projection_dim: 128
 data:
@@ -47,5 +46,4 @@ memory_bank_size: 4096
 precision: fp32
 output: runs/dinov3
 resume: null
-deepspeed: null
 wandb: null
