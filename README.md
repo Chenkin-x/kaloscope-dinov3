@@ -1,55 +1,30 @@
 # Kaloscope DINOv3
 
-画师时间窗口 sigmoid 表征训练。唯一训练入口为 `train_temporal.py`，训练配置为
-`configs/temporal.yaml`。使用 Transformers 5.8.x 加载 DINOv3 ViT，Accelerate 1.13.x
-管理训练，默认采用 DeepSpeed ZeRO-2。
+**为画师风格检索，训练适合自己作品库的图像特征。**
 
-Clone 后在仓库根目录直接运行，使用机器上已有的依赖环境，无需安装本项目：
+Kaloscope 利用画师身份与作品发布时间微调 DINOv3，让同一画师在相近时期的不同作品在特征空间中更接近。训练得到的图像编码器可以将作品转换为特征向量，用于搭建相似画风检索、作品库浏览等应用。
 
-```bash
-accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
-  train_temporal.py --config configs/temporal.yaml
-```
+它提供从训练、评估到模型保存的完整流程：
 
-先填写配置中的 `paths`、`metadata`、`panel` 和 `output`；`--num_processes` 改为实际 GPU 数量。
-`model.name_or_path` 可以是 Hugging Face 模型 ID 或 Transformers 格式的本地目录。
-官方模型需要先获得对应模型的访问权限。
+- **用自己的作品库训练**：通过画师与时间信息构造图像配对，时间窗口默认 365 天，可按数据调整。
+- **检查检索是否有效**：在固定图库上评估同画师、相近时期作品的检索表现，并单独统计角色与作品标签均不同的样本。
+- **保存模型、接着训练**：根据验证结果保存最佳模型，自动调整学习率，支持早停与断点续训。
 
-默认设置：
+开始使用只需要准备数据、填写配置，再启动训练：
 
-- DINOv3 ViT-B/16，CLS 与平均 patch 特征拼接，投影维度 256。
-- 只训练最后 4 个 Transformer blocks、最终 norm、投影头、温度和 bias。
-- 输入分辨率 512，每卡 batch 256，BF16，AdamW，预热 1000 步。
-- 同画师、相距不超过 365 天且不同作品家族为正样本；不同画师且不同作品家族为负样本。
-- 每步 gather 所有 rank 的投影特征，计算 sigmoid 配对损失；梯度累积固定为 1。
+1. 按[数据说明](TEMPORAL_TRAINING_ZH.md#数据接口)准备图片清单、画师与时间等元数据，以及固定的评估集。
+2. 编辑 [configs/temporal.yaml](configs/temporal.yaml)，填写 `paths`、`metadata`、`panel` 和 `output`，设置模型路径与每卡 `batch_size`。
+3. 在已有[依赖环境](requirements.txt)中，从仓库根目录运行。Clone 后即可使用，无需安装本项目：
 
-配对采样器已按 rank 分片，Accelerate 只包装模型和优化器，避免再次切分样本。
+   ```bash
+   accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+     train_temporal.py --config configs/temporal.yaml
+   ```
 
-```text
-train_temporal.py    训练主循环、评估和保存
-configs/
-  temporal.yaml
-  accelerate_zero2.yaml
-  deepspeed_zero2.json
-dinov3/
-  model.py       Transformers 骨干、投影头、温度和 bias
-  data.py        读图和元数据
-  sampling.py    时间窗口配对采样
-  loss.py        sigmoid 配对损失
-  evaluate.py    固定 gallery/query 检索评估
-  control.py     验证驱动的学习率调整和早停
-  config.py      训练配置
-```
+将 `--num_processes` 改为实际 GPU 数量。模型可以使用 Hugging Face ID 或本地 Transformers 模型目录；使用官方权重需先获得访问权限。
 
-续训使用相同配置和 GPU 数量：
+训练结果保存在 `output` 指定的目录中：`best.pt` 用于提取图像特征，日志用于查看训练与检索效果。保留 `last.pt` 和 `state/`，在相同配置与 GPU 数量下给启动命令加上 `--resume`，即可继续训练。
 
-```bash
-accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
-  train_temporal.py --config configs/temporal.yaml --resume
-```
+技术上，项目采用 **DINOv3 + 投影头 + sigmoid 配对损失**，通过 Transformers 加载模型，使用 Accelerate 与 DeepSpeed ZeRO-2 进行多卡训练。默认骨干为 ViT-B/16。
 
-`last.pt` 保存模型、完整骨干配置和训练位置，`state/` 保存 Accelerate 的优化器分片及各 rank RNG。
-续训需要同时保留两者；`best.pt` 用于最佳模型的特征提取。模型恢复不依赖初始预训练目录。
-
-数据准备、采样含义、评估指标和特征提取示例见 [训练说明](TEMPORAL_TRAINING_ZH.md)。
-`requirements.txt` 仅列出环境依赖，脚本不自动安装依赖。
+数据格式、配对规则、评估指标与特征提取示例见[完整使用说明](TEMPORAL_TRAINING_ZH.md)。
