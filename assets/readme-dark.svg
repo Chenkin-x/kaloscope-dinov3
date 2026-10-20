@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" fill="none">
+  <title>Kaloscope DINOv3</title>
+  <desc>Visual features for art and style. A lavender, apricot and sage kaleidoscope on a deep violet background.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1200" y2="340" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1C1927"/>
+      <stop offset="1" stop-color="#29223A"/>
+    </linearGradient>
+    <linearGradient id="petal" x1="-40" y1="-116" x2="42" y2="-18" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C3ACF2"/>
+      <stop offset="1" stop-color="#8468BC"/>
+    </linearGradient>
+    <path id="facet" d="M0-18L-38-62L0-114L38-62Z"/>
+  </defs>
+  <rect x=".5" y=".5" width="1199" height="339" rx="22" fill="url(#background)" stroke="#3B324E"/>
+  <path d="M714 1V339" stroke="#433653" stroke-dasharray="3 7"/>
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif">
+    <rect x="52" y="49" width="7" height="7" rx="2" fill="#B39AD9"/>
+    <text x="72" y="58" fill="#AD9CC3" font-size="12" font-weight="600" letter-spacing="2.8">ART · STYLE · REPRESENTATION</text>
+    <text x="48" y="163" fill="#F0EAF9" font-size="78" font-weight="650" letter-spacing="-3.5">Kaloscope</text>
+    <text x="53" y="205" fill="#B6A9C7" font-size="21" letter-spacing=".3">Visual features for art &amp; style.</text>
+    <g font-size="12" font-weight="600" letter-spacing=".6">
+      <rect x="52" y="257" width="100" height="30" rx="15" fill="#382C4D"/>
+      <text x="102" y="277" fill="#CCB4F1" text-anchor="middle">DINOv3</text>
+      <rect x="164" y="257" width="100" height="30" rx="15" fill="#40312E"/>
+      <text x="214" y="277" fill="#E2B89A" text-anchor="middle">Sigmoid</text>
+      <rect x="276" y="257" width="100" height="30" rx="15" fill="#293C34"/>
+      <text x="326" y="277" fill="#A2C7B2" text-anchor="middle">ZeRO-2</text>
+    </g>
+  </g>
+  <g transform="translate(949 170)">
+    <circle r="140" stroke="#50405F"/>
+    <circle r="126" stroke="#50405F" stroke-dasharray="2 7"/>
+    <path d="M-154 0H154M0-154V154" stroke="#43364F"/>
+    <use href="#facet" fill="url(#petal)"/>
+    <use href="#facet" transform="rotate(45)" fill="#D6A17E"/>
+    <use href="#facet" transform="rotate(90)" fill="#87AD99"/>
+    <use href="#facet" transform="rotate(135)" fill="#AC91D3"/>
+    <use href="#facet" transform="rotate(180)" fill="url(#petal)"/>
+    <use href="#facet" transform="rotate(225)" fill="#D6A17E"/>
+    <use href="#facet" transform="rotate(270)" fill="#87AD99"/>
+    <use href="#facet" transform="rotate(315)" fill="#AC91D3"/>
+    <rect x="-12" y="-12" width="24" height="24" rx="4" transform="rotate(45)" fill="#D0B8F1"/>
+    <circle cx="140" r="4" fill="#A68BCB"/>
+    <circle cx="-140" r="4" fill="#A68BCB"/>
+    <circle cy="140" r="4" fill="#A68BCB"/>
+    <circle cy="-140" r="4" fill="#A68BCB"/>
+  </g>
+</svg>
