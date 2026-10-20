@@ -78,10 +78,28 @@ accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 
 <details>
 <summary><strong>技术简览</strong></summary>
 
-默认采用 **DINOv3 ViT-B/16 + 投影头**，通过 sigmoid 配对损失学习图像之间的关系。
-Transformers 负责模型加载，Accelerate + DeepSpeed ZeRO-2 负责多卡训练。
-时间窗口默认 365 天，可在配置中调整；训练过程包含自动学习率调整、早停和断点续训。
-模型支持 Hugging Face ID 或本地 Transformers 模型目录。
+```mermaid
+flowchart TB
+    images["作品图片"] --> encoder["DINOv3 ViT-B/16<br/>池化 + 投影头"]
+    encoder --> features["图像向量"]
+    metadata["画师 · 发布时间 · 作品家族"] --> pairs["正负样本配对<br/>时间窗口默认 365 天"]
+    features --> loss["Sigmoid 配对训练"]
+    pairs --> loss
+    features --> evaluation["固定图库检索评估<br/>选择最佳模型"]
+
+    classDef input fill:#f0edf8,stroke:#b7a4d4,color:#352a46;
+    classDef model fill:#e8e1f5,stroke:#9d82c4,color:#352a46;
+    classDef training fill:#f7e9df,stroke:#d6ac8b,color:#62432c;
+    classDef output fill:#e5efe9,stroke:#97b8a5,color:#2d4d3c;
+    class images,metadata input;
+    class encoder model;
+    class pairs,loss training;
+    class features,evaluation output;
+```
+
+同画师、相近时间的不同作品作为正样本，不同画师作为负样本；同一作品家族的图像对忽略。
+
+<sub>模型加载：Transformers &nbsp; · &nbsp; 多卡训练：Accelerate + DeepSpeed ZeRO-2</sub>
 
 配对规则、评估指标与全部配置见[使用文档](TEMPORAL_TRAINING_ZH.md)。
 
