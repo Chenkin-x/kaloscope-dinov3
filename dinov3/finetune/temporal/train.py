@@ -14,14 +14,13 @@ import torch.distributed as dist
 from torch.distributed.nn.functional import all_gather
 from torch.utils.data import DataLoader
 
-from ..model import CHECKPOINT_VERSION
-from ..runtime import create_accelerator
 from .config import resolve_config, validate_config
 from .control import Convergence
 from .data import Originals, load_metadata
 from .evaluate import evaluate, load_panel
 from .loss import masks, sigmoid_loss
-from .model import Encoder
+from .model import CHECKPOINT_VERSION, Encoder
+from .runtime import create_accelerator
 from .sampling import PairPool
 
 

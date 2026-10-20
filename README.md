@@ -1,59 +1,57 @@
 # Kaloscope DINOv3
 
-使用 Transformers 加载 DINOv3，提供 ImageFolder 分类／对比微调，以及画师时间窗口 sigmoid 表征训练。
-骨干统一走 `AutoModel.from_pretrained`，不再维护内置 ViT、ConvNeXt 或 Torch Hub 下载代码。
-本项目使用 Transformers 5.8.x、Accelerate 1.13.x。两个训练入口统一通过 Accelerate 运行，
-默认启动配置为 DeepSpeed ZeRO-2。
+画师时间窗口 sigmoid 表征训练。唯一训练入口为 `train_temporal.py`，训练配置为
+`configs/temporal.yaml`。使用 Transformers 5.8.x 加载 DINOv3 ViT，Accelerate 1.13.x
+管理训练，默认采用 DeepSpeed ZeRO-2。
 
-Clone 后在仓库根目录直接运行，不需要安装本项目。使用已有的 PyTorch / torchvision、
-Transformers、Accelerate 和 DeepSpeed 环境；`requirements.txt` 仅列出依赖。
+Clone 后在仓库根目录直接运行，使用机器上已有的依赖环境，无需安装本项目：
 
 ```bash
-accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
-  train.py --config configs/finetune.yaml
-# 时间窗口训练：
 accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
   train_temporal.py --config configs/temporal.yaml
 ```
 
-修改数据目录，并通过 `model.name_or_path` 指定 HF 模型 ID 或 Transformers 格式的本地目录：
+先填写配置中的 `paths`、`metadata`、`panel` 和 `output`；`--num_processes` 改为实际 GPU 数量。
+`model.name_or_path` 可以是 Hugging Face 模型 ID 或 Transformers 格式的本地目录。
+官方模型需要先获得对应模型的访问权限。
 
-```yaml
-model:
-  name_or_path: facebook/dinov3-vitb16-pretrain-lvd1689m
-  pooling: cls_mean
-  projection_dim: 256
+默认设置：
+
+- DINOv3 ViT-B/16，CLS 与平均 patch 特征拼接，投影维度 256。
+- 只训练最后 4 个 Transformer blocks、最终 norm、投影头、温度和 bias。
+- 输入分辨率 512，每卡 batch 256，BF16，AdamW，预热 1000 步。
+- 同画师、相距不超过 365 天且不同作品家族为正样本；不同画师且不同作品家族为负样本。
+- 每步 gather 所有 rank 的投影特征，计算 sigmoid 配对损失；梯度累积固定为 1。
+
+配对采样器已按 rank 分片，Accelerate 只包装模型和优化器，避免再次切分样本。
+
+```text
+train_temporal.py
+configs/
+  temporal.yaml
+  accelerate_zero2.yaml
+  deepspeed_zero2.json
+dinov3/finetune/temporal/
+  model.py       Transformers 骨干、投影头、温度和 bias
+  data.py        读图和元数据
+  sampling.py    时间窗口配对采样
+  loss.py        sigmoid 配对损失
+  evaluate.py    固定 gallery/query 检索评估
+  control.py     验证驱动的学习率调整和早停
+  config.py      训练配置
+  runtime.py     Accelerate 初始化
+  train.py       训练、评估和保存
 ```
 
-官方模型需要先在 [Hugging Face 模型页面](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m)
-取得访问权限，然后 `hf auth login`。加载失败会直接报错，不会改成随机初始化。
-显式随机初始化使用 `name_or_path: null` 和 `backbone_config`，见 [custom_vit.yaml](configs/custom_vit.yaml)。
-
-| 骨干 | `model.name_or_path` |
-| --- | --- |
-| ViT-S/16 | `facebook/dinov3-vits16-pretrain-lvd1689m` |
-| ViT-B/16 | `facebook/dinov3-vitb16-pretrain-lvd1689m` |
-| ViT-L/16 | `facebook/dinov3-vitl16-pretrain-lvd1689m` |
-| ConvNeXt Tiny | `facebook/dinov3-convnext-tiny-pretrain-lvd1689m` |
-
-`pooling` 支持 `cls`、`mean` 和 `cls_mean`。ViT 的 patch 特征排除 CLS 和 register tokens；
-ConvNeXt 使用归一化后的全局池化和空间特征。图像增强、EXIF 方向、透明白底和归一化仍由现有数据管线处理。
+续训使用相同配置和 GPU 数量：
 
 ```bash
-python infer.py --checkpoint runs/dinov3/last.pt \
-  --input base --output outputs/features --patch-tokens
+accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 \
+  train_temporal.py --config configs/temporal.yaml --resume
 ```
 
-`batch_size` 是每卡原始图像数，梯度累积固定为 1；训练精度读取训练 YAML 中的 `precision`。
-已有采样器按 rank 分片，因此只对模型和优化器调用 `accelerator.prepare`，避免二次切分配对样本。
-保存和恢复使用 [Accelerate 标准接口](https://huggingface.co/docs/accelerate/usage_guides/checkpoint)：
-`last.pt` 可独立推理，续训需要同时保留相邻的 `state/`（模型、优化器分片和各 rank RNG）。
+`last.pt` 保存模型、完整骨干配置和训练位置，`state/` 保存 Accelerate 的优化器分片及各 rank RNG。
+续训需要同时保留两者；`best.pt` 用于最佳模型的特征提取。模型恢复不依赖初始预训练目录。
 
-新 checkpoint 保存完整 HF 模型配置，可在没有初始预训练文件时恢复。旧原生 `.pth` 骨干和旧训练
-checkpoint 的参数命名不同，不支持直接加载或断点续训；本次不添加自动转换分支。
-需要单独导出微调骨干时，调用 `model.backbone.save_pretrained("exported_backbone")`，
-后续将该目录填入 `model.name_or_path`。
-
-完整配置、Accelerate ZeRO-2、W&B 和推理见 [微调说明](FINETUNE_ZH.md)。
-画师时间窗口训练见 [训练说明](TEMPORAL_TRAINING_ZH.md) 和 [配置](configs/temporal.yaml)。
-脚本不自动安装依赖，也不修改现有环境。
+数据准备、采样含义、评估指标和特征提取示例见 [训练说明](TEMPORAL_TRAINING_ZH.md)。
+`requirements.txt` 仅列出环境依赖，脚本不自动安装依赖。

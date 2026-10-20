@@ -78,7 +78,7 @@ gallery 和 query 分别至少包含 world size 个样本。每个被计入的�
 配对顺序缓存已按 rank 切分，不经 Accelerate 二次分片。输入采用确定性中心裁剪，恢复会从已保存的 epoch 内位置继续。
 当前使用 Transformers 模型和 checkpoint 格式 3，断点内保存完整骨干配置；恢复不依赖初始模型目录或网络。旧原生 DINOv3 与已有研究入口的 checkpoint 参数命名、格式不同，**不支持直接用 `--resume` 恢复**，也不做自动迁移。
 
-导出特征时加载本入口的编码器，而不是 ImageFolder 分类预测器：
+导出特征时加载本入口的编码器：
 
 ```python
 import torch
@@ -103,10 +103,5 @@ CUDA_VISIBLE_DEVICES='' ACCELERATE_USE_CPU=true OMP_NUM_THREADS=1 OPENBLAS_NUM_T
 ```
 
 测试使用临时小图和随机初始化的小型 ViT，覆盖预处理、采样覆盖、时间边界、同家族排除、dev/test 隔离、
-单进程恢复、多进程 Gloo 训练与恢复，以及通用入口的单/双视图 CE 和对比学习。
+单进程恢复、多进程 Gloo 训练与恢复，以及 sigmoid loss 的分布式梯度一致性。
 CPU 测试不能替代目标硬件上的 NCCL/bf16 性能验证，也不证明模型学习效果。
-
-## Kaloscope3 版本化配方
-
-正式 2K 基线与 4K＋跨内容配对＋5% 灰度候选的参数及兼容性说明见
-[configs/kaloscope3](configs/kaloscope3/README.md)。v1 提供原生 CLI 配置；v2 是完整策略记录，尚不能直接通过当前原生入口执行，不能仅提高 batch 后视作同一版本。

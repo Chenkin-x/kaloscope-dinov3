@@ -2,10 +2,25 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image, ImageOps
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-from dinov3.finetune.data import rgb_loader
+
+def prepare_rgb(image):
+    """Apply orientation and composite transparency before discarding alpha."""
+    image = ImageOps.exif_transpose(image)
+    if "A" in image.getbands() or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        background.alpha_composite(rgba)
+        return background.convert("RGB")
+    return image.convert("RGB")
+
+
+def rgb_loader(path):
+    with Image.open(path) as image:
+        return prepare_rgb(image)
 
 
 class Originals(Dataset):

@@ -1,7 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 
-from dinov3.finetune.model import read_config
+from omegaconf import OmegaConf
 
 DEFAULTS = {
     "model": {
@@ -45,7 +45,7 @@ DEFAULTS = {
 
 
 def resolve_config(path):
-    supplied = read_config(path)
+    supplied = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
     if not isinstance(supplied, dict) or set(supplied) - set(DEFAULTS):
         raise ValueError("Unknown temporal training configuration keys")
     config = {**deepcopy(DEFAULTS), **supplied}
