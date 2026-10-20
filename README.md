@@ -15,7 +15,7 @@
   &nbsp; · &nbsp;
   <a href="TEMPORAL_TRAINING_ZH.md#评估早停与检查点">特征提取</a>
   &nbsp; · &nbsp;
-  <a href="LICENSE.md">License</a>
+  <a href="LICENSE.md">GPLv3</a>
 </p>
 
 <br>
@@ -93,5 +93,5 @@ Transformers 负责模型加载，Accelerate + DeepSpeed ZeRO-2 负责多卡训�
 
 <p align="center">
   <sub>Kaloscope · Built with DINOv3</sub><br>
-  <sub><a href="MODEL_CARD.md">DINOv3 模型说明</a> &nbsp; · &nbsp; <a href="LICENSE.md">DINOv3 License</a></sub>
+  <sub>Licensed under <a href="LICENSE.md">GNU GPLv3 · GPL-3.0-only</a></sub>
 </p>
