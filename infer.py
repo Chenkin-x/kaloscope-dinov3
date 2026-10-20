@@ -5,8 +5,8 @@ from pathlib import Path
 import torch
 import torch.nn.functional as functional
 
-from .data import image_transform, rgb_loader
-from .model import CHECKPOINT_VERSION, FineTuneModel, load_weights, read_config
+from dinov3.finetune.data import image_transform, rgb_loader
+from dinov3.finetune.model import CHECKPOINT_VERSION, FineTuneModel, load_weights, read_config
 
 
 class Predictor:

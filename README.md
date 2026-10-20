@@ -40,7 +40,7 @@ model:
 ConvNeXt 使用归一化后的全局池化和空间特征。图像增强、EXIF 方向、透明白底和归一化仍由现有数据管线处理。
 
 ```bash
-python -m dinov3.finetune.infer --checkpoint runs/dinov3/last.pt \
+python infer.py --checkpoint runs/dinov3/last.pt \
   --input base --output outputs/features --patch-tokens
 ```
 

@@ -186,7 +186,7 @@ accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 
 重新训练分类头时，先把训练骨干导出为 Transformers 目录：
 
 ```python
-from dinov3.finetune.infer import Predictor
+from infer import Predictor
 model = Predictor(checkpoint="runs/dinov3/last.pt", device="cpu").model
 model.backbone.save_pretrained("exported_backbone")
 ```
@@ -249,7 +249,7 @@ EMA 在 rank 0 的 CPU 上以 FP32 保存，浮点状态做滑动平均，整数
 推理时明确选择 EMA：
 
 ```bash
-python -m dinov3.finetune.infer --checkpoint runs/dinov3/last.pt --ema --input /path/to/images --output outputs/ema
+python infer.py --checkpoint runs/dinov3/last.pt --ema --input /path/to/images --output outputs/ema
 ```
 
 Python 对应 `Predictor(checkpoint="runs/dinov3/last.pt", use_ema=True)`；checkpoint 中没有 EMA 时会直接报错。
@@ -357,7 +357,7 @@ accelerate launch --config_file configs/accelerate_zero2.yaml --num_processes 8 
 ## 分类推理与下游特征
 
 ```bash
-python -m dinov3.finetune.infer --checkpoint runs/dinov3/last.pt --input /path/to/images --output outputs/features --topk 5 --patch-tokens --normalize
+python infer.py --checkpoint runs/dinov3/last.pt --input /path/to/images --output outputs/features --topk 5 --patch-tokens --normalize
 ```
 
 输入可以是单张图片或递归目录。没有分类头时只输出特征，不产生随机分类结果。有分类头时同时输出类别 ID、类别名称、softmax 概率和 logits。`--normalize` 仅对导出的全局特征做 L2 归一化，不改变分类输入或 patch tokens
@@ -373,7 +373,7 @@ python -m dinov3.finetune.infer --checkpoint runs/dinov3/last.pt --input /path/t
 直接对预训练骨干推理，使用包含 `model` 和 `data.image_size` 的 YAML：
 
 ```bash
-python -m dinov3.finetune.infer --config configs/finetune.yaml --input /path/to/images --output outputs/pretrained
+python infer.py --config configs/finetune.yaml --input /path/to/images --output outputs/pretrained
 ```
 
 完整训练 checkpoint 使用 `--checkpoint`，自动还原预处理、骨干、分类头和类别。配置加载仅加载骨干，不自动探测原生权重或分类头。
@@ -384,7 +384,7 @@ Python 调用：
 
 ```python
 from PIL import Image
-from dinov3.finetune.infer import Predictor
+from infer import Predictor
 
 predictor = Predictor(checkpoint="runs/dinov3/last.pt")
 result = predictor.predict([Image.open("example.jpg")], patches=True)
