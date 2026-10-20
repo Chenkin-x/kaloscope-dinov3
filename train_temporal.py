@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.distributed as dist
+from accelerate import Accelerator
 from torch.distributed.nn.functional import all_gather
 from torch.utils.data import DataLoader
 
@@ -20,7 +21,6 @@ from dinov3.data import Originals, load_metadata
 from dinov3.evaluate import evaluate, load_panel
 from dinov3.loss import masks, sigmoid_loss
 from dinov3.model import CHECKPOINT_VERSION, Encoder
-from dinov3.runtime import create_accelerator
 from dinov3.sampling import PairPool
 
 
@@ -64,7 +64,15 @@ def restore_rng(state, device):
 
 def train(config, resume=False, max_steps=0):
     validate_config(config)
-    accelerator = create_accelerator(config, config["gradient_clip"])
+    accelerator = Accelerator(
+        mixed_precision="no" if config["precision"] == "fp32" else config["precision"],
+        gradient_accumulation_steps=1,
+    )
+    plugin = accelerator.state.deepspeed_plugin
+    if plugin is not None:
+        # The pair sampler already partitions samples by rank; do not shard the loader again.
+        plugin.deepspeed_config["train_micro_batch_size_per_gpu"] = config["batch_size"]
+        plugin.deepspeed_config["gradient_clipping"] = config["gradient_clip"]
     try:
         _train(config, resume, max_steps, accelerator)
     finally:

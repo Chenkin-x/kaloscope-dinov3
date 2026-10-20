@@ -39,7 +39,6 @@ dinov3/
   evaluate.py    固定 gallery/query 检索评估
   control.py     验证驱动的学习率调整和早停
   config.py      训练配置
-  runtime.py     Accelerate 初始化
 ```
 
 续训使用相同配置和 GPU 数量：
